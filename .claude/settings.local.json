@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(az --version)",
+      "Bash(az account *)",
+      "Bash(az group *)",
+      "Bash(az vm *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(wait)",
+      "Bash(az resource *)",
+      "Bash(python -c \"import sys,json; data=json.load\\(sys.stdin\\); [print\\(f\\\\\"{d['name']}: {[r['reasonCode'] for r in d.get\\('restrictions',[]\\)]}\\\\\" \\) for d in data]\")",
+      "Bash(0)"
+    ]
+  }
+}

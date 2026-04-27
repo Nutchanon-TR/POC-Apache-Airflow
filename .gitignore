@@ -1,0 +1,17 @@
+# Airflow logs
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment
+.env
+
+# MySQL data
+mysql-data/
+
+# OS
+.DS_Store
+Thumbs.db
