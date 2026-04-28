@@ -1,346 +1,218 @@
-# 🌦️ POC-Airflow — Weather ETL Pipeline
+# POC-Airflow — Weather Pipeline
 
-> **Proof of Concept** สำหรับ Apache Airflow: สาธิตการเขียน DAG, สถาปัตยกรรม ETL, และการรัน pipeline บน Docker
+> **Proof of Concept** สำหรับ Apache Airflow: สาธิตการเขียน DAG และการรัน pipeline บน Docker
 
 ---
 
-## 📌 เป้าหมายของโปรเจค
+## เป้าหมายของโปรเจค
 
 โปรเจคนี้เป็น **POC (Proof of Concept)** เพื่อศึกษา Apache Airflow โดยเฉพาะ:
 
 1. **สถาปัตยกรรม Airflow** — ส่วนประกอบต่าง ๆ ทำงานร่วมกันอย่างไร
 2. **การเขียน DAG** — ออกแบบ data pipeline ด้วย Python
-3. **ETL Pattern** — Extract → Transform → Load ครบวงจร
+3. **ETL Pattern** — Extract → Transform → Report
 4. **Containerization** — การรัน Airflow ด้วย Docker Compose
 
 ---
 
-## 🏗️ สถาปัตยกรรมของระบบ (System Architecture)
+## สถาปัตยกรรมของระบบ
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                        Docker Compose                        │
-│                                                              │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │  Airflow     │  │  Airflow    │  │  Airflow            │  │
-│  │  Webserver   │  │  Scheduler  │  │  Celery Worker      │  │
-│  │  :8080       │  │             │  │                     │  │
-│  └──────┬───────┘  └──────┬──────┘  └──────────┬──────────┘  │
-│         │                 │                     │             │
-│         └────────┬────────┘                     │             │
-│                  │                              │             │
-│         ┌────────▼────────┐         ┌───────────▼──────────┐  │
-│         │   PostgreSQL    │         │       Redis          │  │
-│         │  (Metadata DB)  │         │   (Celery Broker)    │  │
-│         └─────────────────┘         └──────────────────────┘  │
-│                                                              │
-│         ┌─────────────────────────────────────────────────┐   │
-│         │                MySQL 8.0                        │   │
-│         │           Database: weathering                  │   │
-│         │  ┌──────────────┐ ┌────────────────────────┐    │   │
-│         │  │ weather_raw  │ │ weather_transformed    │    │   │
-│         │  └──────────────┘ └────────────────────────┘    │   │
-│         │  ┌──────────────┐                               │   │
-│         │  │  etl_log     │                               │   │
-│         │  └──────────────┘                               │   │
-│         └─────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│                     Docker Compose                     │
+│                                                        │
+│  ┌─────────────────┐       ┌──────────────────────┐   │
+│  │ Airflow          │       │ Airflow              │   │
+│  │ Webserver  :8080 │       │ Scheduler            │   │
+│  │ (UI / API)       │       │ (ตรวจ schedule)      │   │
+│  └────────┬─────────┘       └──────────┬───────────┘   │
+│           │                            │               │
+│           └────────────┬───────────────┘               │
+│                        │                               │
+│               ┌────────▼────────┐                      │
+│               │   PostgreSQL    │                      │
+│               │  (Metadata DB)  │                      │
+│               └─────────────────┘                      │
+└────────────────────────────────────────────────────────┘
                           ▲
-                          │ HTTP (Open-Meteo API)
+                          │ HTTP GET
                           │
-                ┌─────────┴──────────┐
-                │  api.open-meteo.com │
-                │  (Free Weather API) │
-                └────────────────────┘
+               ┌──────────┴──────────┐
+               │  api.open-meteo.com │
+               │  (Free Weather API) │
+               └─────────────────────┘
 ```
+
+### ส่วนประกอบ (Services)
+
+| Service | หน้าที่ | RAM (ประมาณ) |
+|---|---|---|
+| **airflow-webserver** | Web UI สำหรับดู DAGs, trigger runs, ดู logs | ~500 MB |
+| **airflow-scheduler** | ตรวจว่า DAG ไหนถึงเวลารัน สร้าง task instances | ~300 MB |
+| **postgres** | เก็บ metadata ของ Airflow (DAG runs, task states, logs) | ~100 MB |
+
+> รวมทั้งหมด ~900 MB — ใช้ได้สบายบน VM 4 GB
+
+### Executor: LocalExecutor
+
+โปรเจคนี้ใช้ **LocalExecutor** ซึ่งรัน tasks ใน process เดียวกับ Scheduler  
+ไม่ต้องการ Redis หรือ Celery Worker → เหมาะกับ development และ POC
+
+| Executor | ใช้เมื่อ | ต้องการ |
+|---|---|---|
+| **LocalExecutor** | dev, POC, single node | แค่ PostgreSQL |
+| CeleryExecutor | production, หลาย worker | + Redis + Worker |
+| KubernetesExecutor | scale บน K8s | + Kubernetes cluster |
 
 ---
 
-## 🔧 ส่วนประกอบของ Airflow (Airflow Components)
+## Data Pipeline — DAG: `weather_pipeline`
 
-### 1. Webserver
-- **หน้าที่**: ให้บริการ Web UI สำหรับจัดการและ monitor DAGs
-- **เข้าถึง**: `http://localhost:8080`
-- **ทำอะไร**: ดูสถานะ DAGs, trigger runs, ดู logs, จัดการ connections
-
-### 2. Scheduler
-- **หน้าที่**: ตรวจสอบว่า DAG ไหนต้องรัน เมื่อไหร่
-- **ทำอะไร**: อ่าน DAG files จาก `/dags`, คำนวณ schedule, สร้าง task instances, ส่ง task ไปให้ Worker ทำงาน
-
-### 3. Worker (Celery)
-- **หน้าที่**: ทำงานจริง (execute tasks)
-- **ทำอะไร**: รับ tasks จาก Redis queue, รัน Python code, รายงานผลกลับ
-- **Executor**: ใช้ `CeleryExecutor` เพื่อรองรับการรัน tasks แบบ parallel
-
-### 4. Triggerer
-- **หน้าที่**: จัดการ deferred tasks (async triggers)
-- **ทำอะไร**: รัน triggers ที่ไม่ต้องคอย worker ตลอดเวลา
-
-### 5. PostgreSQL (Metadata Database)
-- **หน้าที่**: เก็บ metadata ของ Airflow (DAG runs, task instances, connections, variables)
-- **ไม่ใช่**: ที่เก็บข้อมูลของเรา — เราใช้ MySQL แยกต่างหาก
-
-### 6. Redis (Message Broker)
-- **หน้าที่**: เป็น message queue สำหรับ CeleryExecutor
-- **ทำอะไร**: รับ tasks จาก Scheduler แล้วส่งให้ Worker
-
-### 7. MySQL (Target Database)
-- **หน้าที่**: ที่เก็บข้อมูลสภาพอากาศ (เป้าหมายของ ETL pipeline)
-- **Database**: `weathering`
-- **ไม่ได้**: เป็นส่วนของ Airflow — เป็น external system ที่ pipeline เขียนข้อมูลลงไป
-
----
-
-## 📊 Data Pipeline — DAG: `weather_etl_pipeline`
-
-### ภาพรวม Flow
+### Flow
 
 ```
-              ┌──────────────────────────┐
-              │        extract           │
-              │  (Fetch Open-Meteo API)  │
-              └─────┬──────────┬─────────┘
-                    │          │
-           ┌────────▼───┐  ┌──▼──────────┐
-           │ transform  │  │  save_raw   │
-           │ (Compute   │  │ (Store JSON │
-           │  metrics)  │  │  snapshot)  │
-           └────────┬───┘  └─────────────┘
-                    │
-              ┌─────▼─────┐
-              │   load    │
-              │ (→ MySQL) │
-              └───────────┘
+extract ──→ transform ──→ report
 ```
 
 ### Task 1: `extract`
 
-**ทำอะไร**: ดึงข้อมูลพยากรณ์อากาศ 7 วัน จาก [Open-Meteo API](https://open-meteo.com/) สำหรับ 5 เมือง
+ดึงข้อมูลพยากรณ์อากาศ 7 วันจาก [Open-Meteo API](https://open-meteo.com/) สำหรับ 5 เมือง
 
-ข้อมูลที่ดึง:
-| Field                  | คำอธิบาย                    |
-| ---------------------- | --------------------------- |
-| `temperature_2m_max`   | อุณหภูมิสูงสุด (°C)         |
-| `temperature_2m_min`   | อุณหภูมิต่ำสุด (°C)          |
-| `precipitation_sum`    | ปริมาณฝนรวม (mm)            |
-| `windspeed_10m_max`    | ความเร็วลมสูงสุด (km/h)     |
-| `weathercode`          | รหัสสภาพอากาศ (WMO standard) |
+| Field | คำอธิบาย |
+|---|---|
+| `temperature_2m_max` | อุณหภูมิสูงสุด (°C) |
+| `temperature_2m_min` | อุณหภูมิต่ำสุด (°C) |
+| `precipitation_sum` | ปริมาณฝนรวม (mm) |
+| `windspeed_10m_max` | ความเร็วลมสูงสุด (km/h) |
+| `weathercode` | รหัสสภาพอากาศ (WMO standard) |
 
-เมืองที่ดึง (default):
-- 🇹🇭 Bangkok
-- 🇯🇵 Tokyo
-- 🇬🇧 London
-- 🇺🇸 New York
-- 🇦🇺 Sydney
+เมืองที่ดึง: Bangkok, Tokyo, London, New York, Sydney
 
 ### Task 2: `transform`
 
-**ทำอะไร**: แปลงข้อมูลดิบเป็นข้อมูลที่พร้อมใช้ โดยคำนวณ:
+แปลงข้อมูลดิบเป็นข้อมูลที่พร้อมใช้
 
-| Metric           | สูตร / ตรรกะ                          |
-| ---------------- | ------------------------------------- |
-| `temp_mean_c`    | `(temp_max + temp_min) / 2`           |
-| `temp_range_c`   | `temp_max - temp_min`                 |
-| `weather_summary`| แปลง WMO code → ข้อความ (เช่น "Partly cloudy") |
-| `rain_flag`      | `TRUE` ถ้า precipitation > 0          |
-| `hot_flag`       | `TRUE` ถ้า temp_max ≥ 35°C            |
-| `cold_flag`      | `TRUE` ถ้า temp_min ≤ 10°C            |
+| Output field | สูตร |
+|---|---|
+| `temp_mean_c` | `(temp_max + temp_min) / 2` |
+| `temp_range_c` | `temp_max - temp_min` |
+| `weather_summary` | แปลง WMO code → ข้อความ (เช่น "Partly cloudy") |
+| `rain_flag` | `True` ถ้า precipitation > 0 |
+| `hot_flag` | `True` ถ้า temp_max ≥ 35°C |
+| `cold_flag` | `True` ถ้า temp_min ≤ 10°C |
 
-### Task 3: `load`
+### Task 3: `report`
 
-**ทำอะไร**: นำข้อมูลที่ transform แล้วเขียนลง MySQL
+Print ผลลัพธ์แบบตารางออก Airflow task log — ดูได้ใน UI → คลิก task → Logs
 
-- ใช้ `INSERT ... ON DUPLICATE KEY UPDATE` (upsert)
-- บันทึก log ลง table `etl_log`
-- ใช้ `MySqlHook` ของ Airflow เพื่อจัดการ connection
-
-### Task 4: `save_raw`
-
-**ทำอะไร**: เก็บ raw JSON response ลง `weather_raw` table เพื่อ auditing
-
----
-
-## 🗄️ Database Schema: `weathering`
-
-### Table: `weather_transformed`
-
-| Column             | Type          | คำอธิบาย                |
-| ------------------ | ------------- | ----------------------- |
-| id                 | BIGINT (PK)   | Auto-increment          |
-| city               | VARCHAR(100)  | ชื่อเมือง               |
-| latitude           | DECIMAL(8,4)  | ละติจูด                 |
-| longitude          | DECIMAL(8,4)  | ลองจิจูด                |
-| observation_date   | DATE          | วันที่พยากรณ์            |
-| temp_max_c         | DECIMAL(5,2)  | อุณหภูมิสูงสุด (°C)      |
-| temp_min_c         | DECIMAL(5,2)  | อุณหภูมิต่ำสุด (°C)       |
-| temp_mean_c        | DECIMAL(5,2)  | อุณหภูมิเฉลี่ย (°C)      |
-| temp_range_c       | DECIMAL(5,2)  | ช่วงอุณหภูมิ (°C)        |
-| precipitation_mm   | DECIMAL(7,2)  | ปริมาณฝน (mm)           |
-| windspeed_max_kmh  | DECIMAL(6,2)  | ความเร็วลมสูงสุด (km/h)  |
-| weather_summary    | VARCHAR(255)  | สรุปสภาพอากาศ           |
-| rain_flag          | BOOLEAN       | มีฝนตกหรือไม่            |
-| hot_flag           | BOOLEAN       | อากาศร้อน (≥35°C)        |
-| cold_flag          | BOOLEAN       | อากาศหนาว (≤10°C)       |
-| fetched_at         | DATETIME      | เวลาที่ดึงข้อมูล          |
-| created_at         | TIMESTAMP     | เวลาที่สร้าง record       |
-
-**Unique Key**: `(city, observation_date)` — ป้องกันข้อมูลซ้ำ
-
-### Table: `weather_raw`
-
-เก็บ raw JSON response เต็ม ๆ จาก API เพื่อ auditing/debugging
-
-### Table: `etl_log`
-
-บันทึก log ของการรัน ETL แต่ละครั้ง (dag_id, run_id, status, rows_affected)
+```
+[Bangkok]
+  Date         Summary                Max°C  Min°C  Rain mm  Flags
+  ─────────────────────────────────────────────────────────────────
+  2025-01-01   Clear sky               36.5   24.2      0.0  HOT
+  2025-01-02   Partly cloudy           34.1   23.8      2.5  RAIN
+```
 
 ---
 
-## 📁 โครงสร้างโปรเจค (Project Structure)
+## โครงสร้างโปรเจค
 
 ```
 POC-Airflow/
-├── 📄 docker-compose.yml          # รวม services ทั้งหมด
-├── 📄 Dockerfile                  # Custom Airflow image + dependencies
-├── 📄 requirements.txt            # Python packages เพิ่มเติม
-├── 📄 .env                        # Environment variables
-├── 📄 .gitignore
-├── 📄 README.md                   # ← ไฟล์นี้ (อธิบายการทำงาน)
-├── 📄 TOOL.md                     # คู่มือการใช้งาน (How-to guide)
+├── docker-compose.yml        # กำหนด services ทั้งหมด (postgres, webserver, scheduler)
+├── Dockerfile                # สร้าง custom Airflow image
+├── requirements.txt          # Python packages เพิ่มเติม
+├── .env                      # Environment variables (credentials)
 │
-├── 📂 dags/                       # ── Airflow DAGs & modules ──
-│   ├── weather_etl_dag.py         # DAG definition (orchestration only)
-│   │
-│   ├── 📂 config/                 # ── Configuration ──
-│   │   ├── __init__.py
-│   │   └── settings.py            # Constants, city list, WMO codes, thresholds
-│   │
-│   ├── 📂 tasks/                  # ── Task callables (business logic) ──
-│   │   ├── __init__.py
-│   │   ├── extract.py             # E: Fetch data from Open-Meteo API
-│   │   ├── transform.py           # T: Compute derived metrics with pandas
-│   │   └── load.py                # L: Upsert to MySQL + save raw audit data
-│   │
-│   └── 📂 utils/                  # ── Shared utilities ──
-│       ├── __init__.py
-│       └── db_logger.py           # ETL audit logging to etl_log table
-│
-├── 📂 init-sql/                   # MySQL initial schema
-│   └── init.sql                   # สร้างตาราง weather_raw, weather_transformed, etl_log
-│
-├── 📂 scripts/                    # Helper scripts
-│   ├── setup_connection.sh        # สร้าง Airflow connection (Linux/Mac)
-│   └── setup_connection.bat       # สร้าง Airflow connection (Windows)
-│
-├── 📂 plugins/                    # Airflow custom plugins (ว่าง — สำหรับต่อยอด)
-├── 📂 config/                     # Airflow config overrides (ว่าง — สำหรับต่อยอด)
-└── 📂 logs/                       # Airflow logs (auto-generated)
+└── dags/                     # ── Airflow DAGs ──────────────────────────
+    ├── weather_dag.py         # DAG definition (orchestration only)
+    │
+    ├── config/               # ── Configuration ──────────────────────
+    │   └── settings.py       # ค่าคงที่ทั้งหมด: cities, API URL, thresholds
+    │
+    └── tasks/                # ── Business Logic ──────────────────────
+        ├── extract.py        # E: ดึงข้อมูลจาก Open-Meteo API
+        ├── transform.py      # T: คำนวณ metrics, ติด flags
+        └── report.py         # R: แสดงผลใน Airflow log
 ```
 
-### 🧩 โครงสร้าง DAG (Clean Architecture)
-
-โปรเจคนี้แยก code ตามหลัก **Separation of Concerns**:
+### Clean Architecture
 
 ```
-                    weather_etl_dag.py
-                    ┌────────────────┐
-                    │  Orchestration │  ← DAG definition + task wiring
-                    │   Layer        │    (ไม่มี business logic)
-                    └───────┬────────┘
-                            │ imports
-        ┌───────────────────┼───────────────────┐
-        ▼                   ▼                   ▼
-  ┌───────────┐     ┌─────────────┐     ┌────────────┐
-  │  extract  │     │  transform  │     │    load     │
-  │  .py      │     │  .py        │     │    .py      │  ← Business Logic
-  └─────┬─────┘     └──────┬──────┘     └─────┬──────┘    (แต่ละไฟล์ = 1 task)
-        │                  │                  │
-        ▼                  ▼                  ▼
-  ┌──────────┐     ┌─────────────┐     ┌────────────┐
-  │ settings │     │  settings   │     │ db_logger  │  ← Shared Modules
-  │ .py      │     │  .py        │     │ .py        │    (config + utilities)
-  └──────────┘     └─────────────┘     └────────────┘
+                  weather_dag.py
+               ┌────────────────┐
+               │  Orchestration │  ← นิยาม DAG + task dependencies
+               │  Layer only    │    ไม่มี business logic
+               └───────┬────────┘
+                       │ imports
+          ┌────────────┼────────────┐
+          ▼            ▼            ▼
+    ┌──────────┐ ┌──────────┐ ┌──────────┐
+    │ extract  │ │transform │ │  report  │  ← Business Logic
+    └────┬─────┘ └────┬─────┘ └────┬─────┘    (1 ไฟล์ = 1 task)
+         │            │            │
+         └────────────┴────────────┘
+                      │ imports
+               ┌──────▼──────┐
+               │ settings.py │  ← Config (single source of truth)
+               └─────────────┘
 ```
-
-| Layer          | ไฟล์                    | หน้าที่                                           |
-| -------------- | ----------------------- | ------------------------------------------------- |
-| Orchestration  | `weather_etl_dag.py`    | นิยาม DAG, สร้าง tasks, กำหนด dependency          |
-| Business Logic | `tasks/extract.py`      | ดึงข้อมูลจาก API                                   |
-|                | `tasks/transform.py`    | แปลงข้อมูล, คำนวณ metrics                          |
-|                | `tasks/load.py`         | เขียนลง MySQL (transformed + raw)                  |
-| Configuration  | `config/settings.py`    | ค่าคงที่, city list, WMO codes, thresholds         |
-| Utilities      | `utils/db_logger.py`    | บันทึก ETL log ลง database                        |
 
 ---
 
-## 🔑 Core Concepts ที่เรียนรู้จากโปรเจคนี้
+## Airflow Concepts ที่ใช้ในโปรเจคนี้
 
-### 1. DAG (Directed Acyclic Graph)
-- DAG คือ "แผนผัง" ของ pipeline ที่กำหนดว่า tasks ไหนทำก่อน-หลัง
-- เขียนด้วย Python ในไฟล์ `.py` แล้ววางในโฟลเดอร์ `dags/`
-- ตัวอย่าง dependency: `extract >> [transform, save_raw]` → `transform >> load`
+### DAG (Directed Acyclic Graph)
+- "แผนผัง" ของ pipeline กำหนดว่า tasks ไหนทำก่อน-หลัง
+- เขียนด้วย Python วางในโฟลเดอร์ `dags/`
+- `extract >> transform >> report` = ลำดับการทำงาน
 
-### 2. Operators
-- **PythonOperator**: รัน Python function — ใช้ได้หลากหลายที่สุด
-- **MySqlOperator**: รัน SQL ตรง ๆ บน MySQL (ไม่ได้ใช้ในโปรเจคนี้ แต่มีใน Airflow providers)
+### Operators
+- **PythonOperator**: รัน Python function — ใช้บ่อยที่สุด
+- ตัวอื่นที่มีใน Airflow: `BashOperator`, `HttpOperator`, `EmailOperator`, ...
 
-### 3. Hooks
-- **MySqlHook**: จัดการ connection กับ MySQL Database
-- Hooks จะอ่าน connection details จาก Airflow Connections (UI/CLI)
-
-### 4. XCom (Cross-Communication)
+### XCom (Cross-Communication)
 - วิธีส่งข้อมูลระหว่าง tasks
-- `ti.xcom_push(key, value)` → `ti.xcom_pull(key, task_ids)`
-- ⚠️ ไม่ควรส่งข้อมูลขนาดใหญ่มาก (>48KB) ผ่าน XCom
+- `ti.xcom_push(key, value)` → เก็บข้อมูล
+- `ti.xcom_pull(key, task_ids)` → ดึงข้อมูล
+- ไม่ควรส่งข้อมูลขนาดใหญ่ผ่าน XCom (เหมาะกับ metadata หรือ JSON ขนาดเล็ก)
 
-### 5. Connections
-- Airflow เก็บ credentials (host, port, user, password) แบบ centralized
-- ตั้งค่าผ่าน UI, CLI, หรือ environment variables
-- DAG ใช้ `conn_id` อ้างอิง ไม่ hard-code credentials
-
-### 6. Executor
-- **CeleryExecutor**: กระจาย tasks ไปหลาย workers (ผ่าน Redis)
-- เหมาะสำหรับ production — scale out ได้
-- ตัวอื่น: `LocalExecutor` (single-node), `KubernetesExecutor` (K8s pods)
+### Schedule (Cron Expression)
+```
+"0 6 * * *"
+ │ │ │ │ └─ วันในสัปดาห์ (0=อาทิตย์)
+ │ │ │ └─── เดือน
+ │ │ └───── วันที่
+ │ └─────── ชั่วโมง
+ └───────── นาที
+```
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # 1. สร้างโฟลเดอร์
-mkdir -p logs plugins config
+mkdir -p logs plugins
 
-# 2. Build & Init
+# 2. Build image
 docker compose build
+
+# 3. Initialize Airflow (ครั้งแรกครั้งเดียว)
 docker compose up airflow-init
 
-# 3. Start
+# 4. Start
 docker compose up -d
-
-# 4. Setup connection
-scripts\setup_connection.bat        # Windows
-# bash scripts/setup_connection.sh  # Linux/Mac
 
 # 5. เปิด browser → http://localhost:8080
 # Login: airflow / airflow
-# เปิด DAG → Trigger → ดูผลลัพธ์!
+# เปิด DAG weather_pipeline → Trigger → ดูผลที่ task report → Logs
 ```
 
 ---
 
-## 📝 หมายเหตุ
-
-- API ที่ใช้: [Open-Meteo](https://open-meteo.com/) — ฟรี, ไม่ต้อง API key
-- Airflow metadata ใช้ PostgreSQL (แยกจาก MySQL target)
-- ข้อมูลจะถูก upsert (update หรือ insert) ตาม unique key `(city, observation_date)`
-- Schedule default คือทุกวันเวลา 06:00 UTC
-
----
-
-## 📚 เอกสารอ้างอิง
+## เอกสารอ้างอิง
 
 - [Apache Airflow Documentation](https://airflow.apache.org/docs/)
 - [Open-Meteo API Documentation](https://open-meteo.com/en/docs)
-- [Airflow MySQL Provider](https://airflow.apache.org/docs/apache-airflow-providers-mysql/stable/index.html)
 - [Docker Compose for Airflow](https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html)
