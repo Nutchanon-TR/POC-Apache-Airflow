@@ -42,8 +42,9 @@ def fetch_from_supabase() -> list[dict]:
     run_date = ctx["params"].get("run_date") or str(date.today())
 
     headers = {
-        "apikey":        SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "apikey":         SUPABASE_KEY,
+        "Authorization":  f"Bearer {SUPABASE_KEY}",
+        "Accept-Profile": SUPABASE_SCHEMA,
     }
 
     # PostgREST filter syntax: ?column=eq.value
