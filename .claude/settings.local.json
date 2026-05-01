@@ -9,7 +9,25 @@
       "Bash(wait)",
       "Bash(az resource *)",
       "Bash(python -c \"import sys,json; data=json.load\\(sys.stdin\\); [print\\(f\\\\\"{d['name']}: {[r['reasonCode'] for r in d.get\\('restrictions',[]\\)]}\\\\\" \\) for d in data]\")",
-      "Bash(0)"
+      "Bash(0)",
+      "Bash(curl -s http://localhost:8080/health)",
+      "Bash(docker --version)",
+      "Bash(docker compose *)",
+      "Bash(lsb_release -a)",
+      "Bash(sudo apt-get *)",
+      "Bash(sudo install *)",
+      "Bash(curl -fsSL https://download.docker.com/linux/ubuntu/gpg)",
+      "Bash(sudo gpg *)",
+      "Bash(sudo chmod *)",
+      "Bash(dpkg --print-architecture)",
+      "Bash(lsb_release -cs)",
+      "Bash(echo \"deb [arch=$\\(dpkg --print-architecture\\) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $\\(lsb_release -cs\\) stable\")",
+      "Bash(sudo tee *)",
+      "Bash(sudo docker *)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s -u airflow:airflow http://localhost:8080/api/v1/dags)",
+      "Bash(curl -s ifconfig.me)",
+      "Bash(curl -s ipinfo.io/ip)"
     ]
   }
 }
