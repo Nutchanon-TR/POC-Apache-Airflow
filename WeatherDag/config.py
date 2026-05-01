@@ -56,5 +56,5 @@ WMO_CODES: dict[int, str] = {
 # ─── Supabase ────────────────────────────────────────────────────────────────
 SUPABASE_URL    = os.environ["SUPABASE_URL"]
 SUPABASE_KEY    = os.environ["SUPABASE_KEY"]
-SUPABASE_SCHEMA = "airflow"
+SUPABASE_SCHEMA = "public"
 SUPABASE_TABLE  = "weather"

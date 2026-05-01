@@ -42,9 +42,8 @@ def fetch_from_supabase() -> list[dict]:
     run_date = ctx["params"].get("run_date") or str(date.today())
 
     headers = {
-        "apikey":         SUPABASE_KEY,
-        "Authorization":  f"Bearer {SUPABASE_KEY}",
-        "Accept-Profile": SUPABASE_SCHEMA,  # header สำหรับ GET ใน non-public schema
+        "apikey":        SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
     }
 
     # PostgREST filter syntax: ?column=eq.value
@@ -112,7 +111,7 @@ def report_weather(rows: list[dict]) -> int:
     dag_id="weather_report",
     default_args=DAG_DEFAULT_ARGS,
     description="Weather report: อ่านจาก Supabase → Log",
-    schedule=None,              # trigger-only ไม่มี schedule
+    schedule="30 6 * * *",      # ทุกวัน 06:30 UTC (30 นาทีหลัง DAG1 run)
     start_date=datetime(2025, 1, 1),
     catchup=False,
     tags=["weather", "poc", "report"],

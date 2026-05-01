@@ -10,37 +10,40 @@ x-airflow-common: &airflow-common
   build: .
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: mysql+mysqldb://airflow:airflow@mysql/airflow
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    SUPABASE_URL: ${SUPABASE_URL}
+    SUPABASE_KEY: ${SUPABASE_KEY}
   volumes:
-    - ./dags:/opt/airflow/dags
+    - ./WeatherDag:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
     - ./plugins:/opt/airflow/plugins
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
-    postgres:
+    mysql:
       condition: service_healthy
 
 services:
 
   # ── PostgreSQL (Airflow metadata DB) ──────────────────────────────────
-  postgres:
-    image: postgres:16
+  mysql:
+    image: mysql:8.0
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
+      MYSQL_ROOT_PASSWORD: airflow
+      MYSQL_USER: airflow
+      MYSQL_PASSWORD: airflow
+      MYSQL_DATABASE: airflow
     volumes:
-      - postgres-db-volume:/var/lib/postgresql/data
+      - mysql-db-volume:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "airflow"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uairflow", "-pairflow"]
       interval: 10s
       retries: 5
-      start_period: 5s
+      start_period: 30s
     restart: always
 
   # ── Airflow Webserver ─────────────────────────────────────────────────
@@ -98,4 +101,4 @@ services:
       - .:/sources
 
 volumes:
-  postgres-db-volume:
+  mysql-db-volume:
