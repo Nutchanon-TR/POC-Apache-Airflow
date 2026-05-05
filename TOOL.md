@@ -1,283 +1,305 @@
-# TOOL.md — คู่มือการใช้งาน POC-Airflow
+# TOOL.md - คู่มือการใช้งาน POC-Airflow
 
-## สารบัญ
-- [Prerequisites](#prerequisites)
-- [ติดตั้งและเริ่มต้น](#ติดตั้งและเริ่มต้น)
-- [เข้าใช้งาน Airflow UI](#เข้าใช้งาน-airflow-ui)
-- [รัน DAG](#รัน-dag)
-- [ดูผลลัพธ์](#ดูผลลัพธ์)
-- [คำสั่งที่ใช้บ่อย](#คำสั่งที่ใช้บ่อย)
-- [Troubleshooting](#troubleshooting)
-- [ปิดระบบ](#ปิดระบบ)
-- [ปรับแต่ง](#ปรับแต่ง)
+คู่มือนี้อิงจากโค้ดปัจจุบันใน repo:
 
----
+- DAG files อยู่ใน `WeatherDag/`
+- Airflow container mount `./WeatherDag` ไปที่ `/opt/airflow/dags`
+- DAG ID ที่ใช้จริงคือ `weather_ingest` และ `weather_report`
 
 ## Prerequisites
 
-| เครื่องมือ | เวอร์ชัน | ดาวน์โหลด |
-|---|---|---|
-| Docker Desktop | 24.x+ | https://www.docker.com/products/docker-desktop |
-| Docker Compose | v2.x+ (มาพร้อม Docker Desktop) | — |
+| เครื่องมือ | เวอร์ชันแนะนำ |
+|---|---|
+| Docker Desktop | 24.x ขึ้นไป |
+| Docker Compose | v2.x ขึ้นไป |
 
-> ต้องเปิด Docker Desktop ก่อนใช้งาน
+ต้องตั้งค่า Supabase credentials ก่อนรัน:
 
-**ทรัพยากรที่แนะนำ:**
-- RAM: 2 GB ขึ้นไป (ระบบใช้ ~900 MB)
-- Disk: 3 GB ว่าง (สำหรับ Docker images)
-
----
+```env
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your-supabase-key
+```
 
 ## ติดตั้งและเริ่มต้น
 
-### Step 1: สร้างโฟลเดอร์ที่จำเป็น
-
 ```bash
+# สร้างโฟลเดอร์ runtime
 mkdir -p logs plugins
-```
 
-### Step 2: Build Docker Image
-
-```bash
+# build Airflow image
 docker compose build
-```
 
-> ครั้งแรกใช้เวลา 3-5 นาที (ดาวน์โหลด Airflow image + ติดตั้ง packages)
-
-### Step 3: Initialize Airflow (ครั้งแรกครั้งเดียว)
-
-```bash
+# initialize Airflow DB และสร้าง user
 docker compose up airflow-init
-```
 
-> รอจนเห็น `exited with code 0` แสดงว่าสร้าง database และ admin user สำเร็จ
-
-### Step 4: Start ทุก Services
-
-```bash
+# start services
 docker compose up -d
 ```
 
-> `-d` = detached mode (รันใน background)
-
-### Step 5: ตรวจสอบสถานะ
+ตรวจสอบสถานะ:
 
 ```bash
 docker compose ps
 ```
 
-Services ที่ต้องเห็น:
+Services หลักที่ควรเห็น:
 
+```text
+poc-airflow-airflow-webserver-1
+poc-airflow-airflow-scheduler-1
+poc-airflow-mysql-1
 ```
-NAME                               STATUS
-poc-airflow-airflow-webserver-1    Up (healthy)
-poc-airflow-airflow-scheduler-1    Up (healthy)
-poc-airflow-postgres-1             Up (healthy)
-```
-
----
 
 ## เข้าใช้งาน Airflow UI
 
-เปิดเบราว์เซอร์:
+เปิด:
 
-```
+```text
 http://localhost:8080
 ```
 
-| ช่อง | ค่า |
+| ช่อง | ค่า default |
 |---|---|
 | Username | `airflow` |
 | Password | `airflow` |
 
----
-
-## รัน DAG
+## เปิดและรัน DAG
 
 ### เปิดใช้งาน DAG
 
-1. เข้า Airflow UI → **DAGs**
-2. หา DAG ชื่อ `weather_pipeline`
-3. Toggle สวิตช์เปิด (Unpause DAG)
+1. เข้า Airflow UI -> **DAGs**
+2. หา `weather_ingest` และ `weather_report`
+3. Toggle unpause DAG ที่ต้องการใช้งาน
 
-### Trigger ด้วยมือ
+### Trigger `weather_ingest` ผ่าน UI
 
-**ผ่าน UI:**
-คลิกปุ่ม ▶ (Trigger DAG) ที่หน้า DAG list
+1. กดปุ่ม Trigger ที่ DAG `weather_ingest`
+2. ใส่ config ได้ เช่น:
 
-**ผ่าน CLI:**
-```bash
-docker compose exec airflow-webserver airflow dags trigger weather_pipeline
+```json
+{
+  "forecast_days": 7,
+  "cities": ["Bangkok", "Tokyo", "London", "New York", "Sydney"],
+  "trigger_report": true
+}
 ```
 
-### ดูสถานะ
+ถ้า `trigger_report=true`, หลัง load เข้า Supabase สำเร็จ DAG จะ trigger `weather_report` ต่อโดยส่ง `run_date` เป็น `{{ ds }}`
 
-คลิกชื่อ DAG → **Graph** เพื่อเห็น flow ของ tasks
+### Trigger `weather_report` ผ่าน UI
 
-สีของ task:
-- **เขียวเข้ม** = สำเร็จ (success)
-- **เหลือง** = กำลังรัน (running)
-- **แดง** = ล้มเหลว (failed)
-- **เทา** = รอคิว (queued)
+ใช้เมื่อต้องการอ่านข้อมูลจาก Supabase แล้ว report เฉพาะวันที่:
 
----
+```json
+{
+  "run_date": "2026-05-04"
+}
+```
+
+ถ้าไม่ใส่ `run_date` หรือใส่เป็นค่าว่าง DAG จะใช้วันที่ปัจจุบันของ runtime
+
+## CLI Commands
+
+List DAGs:
+
+```bash
+docker compose exec airflow-webserver airflow dags list
+```
+
+Trigger `weather_ingest`:
+
+```bash
+docker compose exec airflow-webserver airflow dags trigger weather_ingest
+```
+
+Trigger `weather_ingest` พร้อม conf:
+
+```bash
+docker compose exec airflow-webserver airflow dags trigger weather_ingest --conf '{"forecast_days": 3, "cities": ["Bangkok", "Tokyo"], "trigger_report": true}'
+```
+
+Trigger `weather_report` พร้อม `run_date`:
+
+```bash
+docker compose exec airflow-webserver airflow dags trigger weather_report --conf '{"run_date": "2026-05-04"}'
+```
+
+ตรวจสอบ DAG import/syntax ใน container:
+
+```bash
+docker compose exec airflow-webserver python /opt/airflow/dags/dag_ingest.py
+docker compose exec airflow-webserver python /opt/airflow/dags/dag_report.py
+```
+
+ดู logs:
+
+```bash
+docker compose logs -f airflow-scheduler
+docker compose logs -f airflow-webserver
+```
+
+เข้า shell container:
+
+```bash
+docker compose exec airflow-webserver bash
+```
 
 ## ดูผลลัพธ์
 
-ผลลัพธ์ทั้งหมดแสดงใน **Airflow task log** ของ task `report`
+### ผลของ `weather_ingest`
 
-1. คลิกชื่อ DAG → คลิก task **report** (วงกลมสีเขียว)
-2. เลือก **Log**
-3. ดูตาราง weather forecast ของทุกเมือง
+เปิด DAG `weather_ingest` -> **Graph** แล้วดู logs ของแต่ละ task:
 
-ตัวอย่างผลลัพธ์:
+- `extract_weather`: จำนวนเมืองที่ดึงจาก Open-Meteo
+- `transform_weather`: จำนวน rows ที่แปลงได้
+- `load_weather`: จำนวน rows ที่ insert เข้า Supabase
+- `should_trigger`: เช็คค่า `trigger_report`
+- `trigger_report_dag`: trigger DAG `weather_report`
 
-```
+### ผลของ `weather_report`
+
+เปิด DAG `weather_report` -> **Graph** -> task `report_weather` -> **Log**
+
+ตัวอย่าง output:
+
+```text
 ============================================================
 WEATHER FORECAST REPORT
 ============================================================
 
 [Bangkok]
   Date         Summary                Max°C  Min°C  Rain mm  Flags
-  ──────────────────────────────────────────────────────────────
-  2025-01-01   Clear sky               36.5   24.2      0.0  HOT
-  2025-01-02   Partly cloudy           34.1   23.8      2.5  RAIN
-  ...
+  ----------------------------------------------------------------------
+  2026-05-04   Clear sky               36.5   24.2      0.0  HOT
+  2026-05-05   Partly cloudy           34.1   23.8      2.5  RAIN
 
-[Tokyo]
-  ...
-
-Total rows: 35
+Total rows: 10
 ============================================================
 ```
 
----
+## ปรับแต่ง
 
-## คำสั่งที่ใช้บ่อย
+### เพิ่มหรือแก้เมือง
 
-```bash
-# ดูสถานะ services
-docker compose ps
+แก้ไข `WeatherDag/config.py`:
 
-# ดู log แบบ real-time
-docker compose logs -f airflow-scheduler
-docker compose logs -f airflow-webserver
-
-# เข้า shell ของ Airflow container
-docker compose exec airflow-webserver bash
-
-# ตรวจสอบ DAG syntax
-docker compose exec airflow-webserver python /opt/airflow/dags/weather_dag.py
-
-# list DAGs ทั้งหมด
-docker compose exec airflow-webserver airflow dags list
-
-# trigger DAG
-docker compose exec airflow-webserver airflow dags trigger weather_pipeline
+```python
+CITIES: dict[str, dict[str, float]] = {
+    "Bangkok": {"lat": 13.7563, "lon": 100.5018},
+    "Chiang Mai": {"lat": 18.7883, "lon": 98.9853},
+}
 ```
 
----
+### เปลี่ยนจำนวนวันพยากรณ์
+
+ตั้งค่าตอน trigger ด้วย param `forecast_days`:
+
+```json
+{
+  "forecast_days": 3
+}
+```
+
+ค่าที่รองรับใน DAG คือ `1` ถึง `16`
+
+### เปลี่ยนเมืองตอน trigger
+
+```json
+{
+  "cities": ["Bangkok", "Sydney"]
+}
+```
+
+ถ้าส่งชื่อเมืองที่ไม่มีใน `CITIES` เมืองนั้นจะถูกกรองออก และถ้าไม่เหลือเมืองที่ถูกต้อง task `extract_weather` จะ fail
+
+### เปิด/ปิดการ trigger report ต่อ
+
+```json
+{
+  "trigger_report": false
+}
+```
+
+เมื่อเป็น `false`, `should_trigger` จะ short-circuit และ skip `trigger_report_dag`
+
+### เปลี่ยน schedule
+
+แก้ค่า `schedule` ในไฟล์ DAG โดยตรง:
+
+- `WeatherDag/dag_ingest.py`: `schedule="0 6 * * *"`
+- `WeatherDag/dag_report.py`: `schedule="30 6 * * *"`
 
 ## Troubleshooting
 
 ### DAG ไม่ปรากฏใน UI
 
-```bash
-# ดู error จาก scheduler
-docker compose logs airflow-scheduler --tail=50
-
-# ตรวจ syntax ของ DAG file
-docker compose exec airflow-webserver python /opt/airflow/dags/weather_dag.py
-```
-
-> สาเหตุที่พบบ่อย: import error, syntax error ในไฟล์ DAG
-
-### Task ล้มเหลว (Failed)
-
-1. คลิก task ที่สีแดงใน UI
-2. เลือก **Log** ดู error message
-3. หรือดูจาก CLI:
+ตรวจ logs:
 
 ```bash
 docker compose logs airflow-scheduler --tail=100
 ```
 
+ตรวจ import/syntax:
+
+```bash
+docker compose exec airflow-webserver python /opt/airflow/dags/dag_ingest.py
+docker compose exec airflow-webserver python /opt/airflow/dags/dag_report.py
+```
+
+สาเหตุที่พบบ่อย:
+
+- `.env` ไม่มี `SUPABASE_URL` หรือ `SUPABASE_KEY`
+- import error จาก dependency
+- syntax error ในไฟล์ DAG
+
+### `weather_report` ไม่เจอข้อมูล
+
+`fetch_from_supabase` filter ด้วย:
+
+```text
+dag_run_date=eq.{run_date}
+```
+
+ตรวจว่า Supabase table `weather` มีคอลัมน์ `dag_run_date` และค่าตรงกับ `run_date` ที่ trigger หรือไม่
+
 ### Port 8080 ถูกใช้แล้ว
 
-แก้ไข `docker-compose.yml`:
+แก้ `docker-compose.yml`:
 
 ```yaml
 ports:
-  - "8081:8080"   # เปลี่ยน 8080 เป็น 8081 (หรือ port อื่น)
+  - "8081:8080"
 ```
 
-### Reset ทั้งหมด
+จากนั้นเปิด `http://localhost:8081`
+
+### Reset ระบบ
+
+คำสั่งนี้ลบ containers และ volumes:
 
 ```bash
-docker compose down -v           # ลบ containers + volumes
-docker compose build --no-cache  # build ใหม่
-docker compose up airflow-init   # initialize ใหม่
+docker compose down -v
+docker compose build --no-cache
+docker compose up airflow-init
 docker compose up -d
 ```
 
----
-
 ## ปิดระบบ
 
+หยุดชั่วคราว:
+
 ```bash
-# หยุดชั่วคราว (เก็บข้อมูลไว้)
 docker compose stop
+```
 
-# เริ่มใหม่หลังหยุด
+เริ่มใหม่:
+
+```bash
 docker compose start
+```
 
-# ปิดและลบ containers (เก็บ volumes ไว้)
+ปิด containers แต่เก็บ volumes:
+
+```bash
 docker compose down
-
-# ปิดและลบทุกอย่างรวม volumes (ข้อมูลหาย)
-docker compose down -v
-```
-
----
-
-## ปรับแต่ง
-
-### เพิ่มเมือง
-
-แก้ไข `dags/config/settings.py`:
-
-```python
-CITIES: dict[str, dict[str, float]] = {
-    "Bangkok":    {"lat": 13.7563, "lon": 100.5018},
-    "Chiang Mai": {"lat": 18.7883, "lon": 98.9853},   # เพิ่มใหม่
-    # ...
-}
-```
-
-### เปลี่ยน Schedule
-
-แก้ไข `DAG_SCHEDULE` ใน `dags/config/settings.py`:
-
-```python
-DAG_SCHEDULE = "0 6 * * *"     # ทุกวัน 06:00 UTC
-DAG_SCHEDULE = "0 */6 * * *"   # ทุก 6 ชั่วโมง
-DAG_SCHEDULE = "@hourly"        # ทุกชั่วโมง
-DAG_SCHEDULE = "@daily"         # ทุกวัน (เที่ยงคืน UTC)
-```
-
-### เปลี่ยนจำนวนวันพยากรณ์
-
-แก้ไข `FORECAST_DAYS` ใน `dags/config/settings.py`:
-
-```python
-FORECAST_DAYS = 7   # เปลี่ยนเป็น 1-16 ตามที่ API รองรับ
-```
-
-### เปลี่ยน threshold HOT/COLD
-
-แก้ไขใน `dags/config/settings.py`:
-
-```python
-HOT_THRESHOLD_C  = 35   # temp_max >= ค่านี้ → ติด HOT flag
-COLD_THRESHOLD_C = 10   # temp_min <= ค่านี้ → ติด COLD flag
 ```

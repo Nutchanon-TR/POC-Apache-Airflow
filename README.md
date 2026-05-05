@@ -1,218 +1,182 @@
-# POC-Airflow — Weather Pipeline
+# POC-Airflow - Weather Pipeline
 
-> **Proof of Concept** สำหรับ Apache Airflow: สาธิตการเขียน DAG และการรัน pipeline บน Docker
+Proof of Concept สำหรับ Apache Airflow ที่รันด้วย Docker Compose โดยมี 2 DAG หลัก:
 
----
+- `weather_ingest`: ดึงข้อมูลจาก Open-Meteo, transform, แล้ว load เข้า Supabase
+- `weather_report`: อ่านข้อมูลจาก Supabase แล้ว print รายงานลง Airflow log
+
+ดู flow แบบละเอียดได้ที่ [FLOW.md](FLOW.md)
 
 ## เป้าหมายของโปรเจค
 
-โปรเจคนี้เป็น **POC (Proof of Concept)** เพื่อศึกษา Apache Airflow โดยเฉพาะ:
+1. ศึกษาการเขียน DAG ด้วย Airflow TaskFlow API และ Operators
+2. สาธิต ETL flow แบบ Extract -> Transform -> Load -> Report
+3. ใช้ Docker Compose เพื่อรัน Airflow Webserver, Scheduler และ metadata DB
+4. เชื่อมต่อ external services คือ Open-Meteo API และ Supabase REST API
 
-1. **สถาปัตยกรรม Airflow** — ส่วนประกอบต่าง ๆ ทำงานร่วมกันอย่างไร
-2. **การเขียน DAG** — ออกแบบ data pipeline ด้วย Python
-3. **ETL Pattern** — Extract → Transform → Report
-4. **Containerization** — การรัน Airflow ด้วย Docker Compose
+## สถาปัตยกรรมระบบ
 
----
+```mermaid
+flowchart LR
+    Web[Airflow Webserver :8080]
+    Scheduler[Airflow Scheduler]
+    MySQL[(MySQL Metadata DB)]
+    OpenMeteo[Open-Meteo API]
+    Supabase[(Supabase table: weather)]
+    Logs[Airflow Logs]
 
-## สถาปัตยกรรมของระบบ
-
-```
-┌────────────────────────────────────────────────────────┐
-│                     Docker Compose                     │
-│                                                        │
-│  ┌─────────────────┐       ┌──────────────────────┐   │
-│  │ Airflow          │       │ Airflow              │   │
-│  │ Webserver  :8080 │       │ Scheduler            │   │
-│  │ (UI / API)       │       │ (ตรวจ schedule)      │   │
-│  └────────┬─────────┘       └──────────┬───────────┘   │
-│           │                            │               │
-│           └────────────┬───────────────┘               │
-│                        │                               │
-│               ┌────────▼────────┐                      │
-│               │   PostgreSQL    │                      │
-│               │  (Metadata DB)  │                      │
-│               └─────────────────┘                      │
-└────────────────────────────────────────────────────────┘
-                          ▲
-                          │ HTTP GET
-                          │
-               ┌──────────┴──────────┐
-               │  api.open-meteo.com │
-               │  (Free Weather API) │
-               └─────────────────────┘
+    Web <--> MySQL
+    Scheduler <--> MySQL
+    Scheduler --> Ingest[weather_ingest]
+    Web --> Ingest
+    Web --> Report[weather_report]
+    Ingest --> OpenMeteo
+    Ingest --> Supabase
+    Ingest -. optional trigger .-> Report
+    Report --> Supabase
+    Report --> Logs
 ```
 
-### ส่วนประกอบ (Services)
+## Services ใน Docker Compose
 
-| Service | หน้าที่ | RAM (ประมาณ) |
-|---|---|---|
-| **airflow-webserver** | Web UI สำหรับดู DAGs, trigger runs, ดู logs | ~500 MB |
-| **airflow-scheduler** | ตรวจว่า DAG ไหนถึงเวลารัน สร้าง task instances | ~300 MB |
-| **postgres** | เก็บ metadata ของ Airflow (DAG runs, task states, logs) | ~100 MB |
-
-> รวมทั้งหมด ~900 MB — ใช้ได้สบายบน VM 4 GB
-
-### Executor: LocalExecutor
-
-โปรเจคนี้ใช้ **LocalExecutor** ซึ่งรัน tasks ใน process เดียวกับ Scheduler  
-ไม่ต้องการ Redis หรือ Celery Worker → เหมาะกับ development และ POC
-
-| Executor | ใช้เมื่อ | ต้องการ |
-|---|---|---|
-| **LocalExecutor** | dev, POC, single node | แค่ PostgreSQL |
-| CeleryExecutor | production, หลาย worker | + Redis + Worker |
-| KubernetesExecutor | scale บน K8s | + Kubernetes cluster |
-
----
-
-## Data Pipeline — DAG: `weather_pipeline`
-
-### Flow
-
-```
-extract ──→ transform ──→ report
-```
-
-### Task 1: `extract`
-
-ดึงข้อมูลพยากรณ์อากาศ 7 วันจาก [Open-Meteo API](https://open-meteo.com/) สำหรับ 5 เมือง
-
-| Field | คำอธิบาย |
+| Service | หน้าที่ |
 |---|---|
-| `temperature_2m_max` | อุณหภูมิสูงสุด (°C) |
-| `temperature_2m_min` | อุณหภูมิต่ำสุด (°C) |
-| `precipitation_sum` | ปริมาณฝนรวม (mm) |
-| `windspeed_10m_max` | ความเร็วลมสูงสุด (km/h) |
-| `weathercode` | รหัสสภาพอากาศ (WMO standard) |
+| `airflow-webserver` | Airflow UI/API ที่ `http://localhost:8080` |
+| `airflow-scheduler` | ตรวจ schedule และสร้าง task instances |
+| `mysql` | Airflow metadata database |
+| `airflow-init` | one-shot bootstrap สำหรับ migrate DB และสร้าง admin user |
 
-เมืองที่ดึง: Bangkok, Tokyo, London, New York, Sydney
+Executor ที่ใช้คือ `LocalExecutor` จึงไม่ต้องมี Redis, Celery Worker หรือ Kubernetes cluster
 
-### Task 2: `transform`
+## DAGs
 
-แปลงข้อมูลดิบเป็นข้อมูลที่พร้อมใช้
+### `weather_ingest`
 
-| Output field | สูตร |
+ไฟล์: `WeatherDag/dag_ingest.py`
+
+Schedule: `0 6 * * *` หรือทุกวัน 06:00 UTC
+
+Flow:
+
+```mermaid
+flowchart LR
+    Extract[extract_weather] --> Transform[transform_weather]
+    Transform --> Load[load_weather]
+    Load --> Gate{should_trigger}
+    Gate -- true --> Trigger[trigger_report_dag]
+    Gate -- false --> End([end])
+```
+
+Params:
+
+| Param | Default | รายละเอียด |
+|---|---:|---|
+| `forecast_days` | `7` | จำนวนวันพยากรณ์จาก Open-Meteo, ช่วง `1` ถึง `16` |
+| `cities` | ทุกเมือง | รายชื่อเมืองจาก `CITIES` |
+| `trigger_report` | `true` | trigger `weather_report` ต่อหลัง load สำเร็จ |
+
+### `weather_report`
+
+ไฟล์: `WeatherDag/dag_report.py`
+
+Schedule: `30 6 * * *` หรือทุกวัน 06:30 UTC
+
+Flow:
+
+```mermaid
+flowchart LR
+    Fetch[fetch_from_supabase] --> Report[report_weather]
+```
+
+Params:
+
+| Param | Default | รายละเอียด |
+|---|---|---|
+| `run_date` | `""` | วันที่ต้องการ report ในรูปแบบ `YYYY-MM-DD`; ถ้าว่างจะใช้วันที่ปัจจุบัน |
+
+## Data Flow
+
+1. `weather_ingest` อ่าน params จาก Airflow run
+2. `extract_weather` เรียก Open-Meteo API ตามเมืองและจำนวนวันที่เลือก
+3. `transform_weather` flatten daily arrays เป็น rows และคำนวณ metrics/flags
+4. `load_weather` insert rows เข้า Supabase table `weather`
+5. ถ้า `trigger_report=true`, task `trigger_report_dag` จะ trigger DAG `weather_report` พร้อม `run_date={{ ds }}`
+6. `weather_report` อ่าน rows จาก Supabase ด้วย filter `dag_run_date=eq.{run_date}`
+7. `report_weather` group by `city` แล้ว print รายงานลง Airflow log
+
+## Data Fields
+
+| Field | รายละเอียด |
 |---|---|
-| `temp_mean_c` | `(temp_max + temp_min) / 2` |
-| `temp_range_c` | `temp_max - temp_min` |
-| `weather_summary` | แปลง WMO code → ข้อความ (เช่น "Partly cloudy") |
-| `rain_flag` | `True` ถ้า precipitation > 0 |
-| `hot_flag` | `True` ถ้า temp_max ≥ 35°C |
-| `cold_flag` | `True` ถ้า temp_min ≤ 10°C |
+| `temperature_2m_max` | อุณหภูมิสูงสุดจาก Open-Meteo |
+| `temperature_2m_min` | อุณหภูมิต่ำสุดจาก Open-Meteo |
+| `precipitation_sum` | ปริมาณฝนรวม |
+| `windspeed_10m_max` | ความเร็วลมสูงสุด |
+| `weathercode` | WMO weather code |
+| `temp_mean_c` | `(temp_max_c + temp_min_c) / 2` |
+| `temp_range_c` | `temp_max_c - temp_min_c` |
+| `weather_summary` | ข้อความที่ map จาก `WMO_CODES` |
+| `rain_flag` | `true` เมื่อ `precipitation_mm > 0` |
+| `hot_flag` | `true` เมื่อ `temp_max_c >= 35` |
+| `cold_flag` | `true` เมื่อ `temp_min_c <= 10` |
 
-### Task 3: `report`
+เมืองเริ่มต้น: Bangkok, Tokyo, London, New York, Sydney
 
-Print ผลลัพธ์แบบตารางออก Airflow task log — ดูได้ใน UI → คลิก task → Logs
-
-```
-[Bangkok]
-  Date         Summary                Max°C  Min°C  Rain mm  Flags
-  ─────────────────────────────────────────────────────────────────
-  2025-01-01   Clear sky               36.5   24.2      0.0  HOT
-  2025-01-02   Partly cloudy           34.1   23.8      2.5  RAIN
-```
-
----
+หมายเหตุ: `weather_report` filter ด้วยคอลัมน์ `dag_run_date` ดังนั้น Supabase table `weather` ต้องมีคอลัมน์นี้ หรือมี default/trigger ที่เติมค่าให้ตรงกับวันที่ run
 
 ## โครงสร้างโปรเจค
 
-```
+```text
 POC-Airflow/
-├── docker-compose.yml        # กำหนด services ทั้งหมด (postgres, webserver, scheduler)
-├── Dockerfile                # สร้าง custom Airflow image
-├── requirements.txt          # Python packages เพิ่มเติม
-├── .env                      # Environment variables (credentials)
-│
-└── dags/                     # ── Airflow DAGs ──────────────────────────
-    ├── weather_dag.py         # DAG definition (orchestration only)
-    │
-    ├── config/               # ── Configuration ──────────────────────
-    │   └── settings.py       # ค่าคงที่ทั้งหมด: cities, API URL, thresholds
-    │
-    └── tasks/                # ── Business Logic ──────────────────────
-        ├── extract.py        # E: ดึงข้อมูลจาก Open-Meteo API
-        ├── transform.py      # T: คำนวณ metrics, ติด flags
-        └── report.py         # R: แสดงผลใน Airflow log
+├── docker-compose.yml
+├── Dockerfile
+├── requirements.txt
+├── README.md
+├── TOOL.md
+├── FLOW.md
+└── WeatherDag/
+    ├── dag_ingest.py
+    ├── dag_report.py
+    └── config.py
 ```
 
-### Clean Architecture
+ใน `docker-compose.yml` โฟลเดอร์ `WeatherDag` ถูก mount ไปที่ `/opt/airflow/dags`
 
+## Environment Variables
+
+ต้องมีค่าเหล่านี้ใน `.env` หรือ environment ก่อนรัน container:
+
+```env
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your-supabase-service-or-api-key
 ```
-                  weather_dag.py
-               ┌────────────────┐
-               │  Orchestration │  ← นิยาม DAG + task dependencies
-               │  Layer only    │    ไม่มี business logic
-               └───────┬────────┘
-                       │ imports
-          ┌────────────┼────────────┐
-          ▼            ▼            ▼
-    ┌──────────┐ ┌──────────┐ ┌──────────┐
-    │ extract  │ │transform │ │  report  │  ← Business Logic
-    └────┬─────┘ └────┬─────┘ └────┬─────┘    (1 ไฟล์ = 1 task)
-         │            │            │
-         └────────────┴────────────┘
-                      │ imports
-               ┌──────▼──────┐
-               │ settings.py │  ← Config (single source of truth)
-               └─────────────┘
-```
-
----
-
-## Airflow Concepts ที่ใช้ในโปรเจคนี้
-
-### DAG (Directed Acyclic Graph)
-- "แผนผัง" ของ pipeline กำหนดว่า tasks ไหนทำก่อน-หลัง
-- เขียนด้วย Python วางในโฟลเดอร์ `dags/`
-- `extract >> transform >> report` = ลำดับการทำงาน
-
-### Operators
-- **PythonOperator**: รัน Python function — ใช้บ่อยที่สุด
-- ตัวอื่นที่มีใน Airflow: `BashOperator`, `HttpOperator`, `EmailOperator`, ...
-
-### XCom (Cross-Communication)
-- วิธีส่งข้อมูลระหว่าง tasks
-- `ti.xcom_push(key, value)` → เก็บข้อมูล
-- `ti.xcom_pull(key, task_ids)` → ดึงข้อมูล
-- ไม่ควรส่งข้อมูลขนาดใหญ่ผ่าน XCom (เหมาะกับ metadata หรือ JSON ขนาดเล็ก)
-
-### Schedule (Cron Expression)
-```
-"0 6 * * *"
- │ │ │ │ └─ วันในสัปดาห์ (0=อาทิตย์)
- │ │ │ └─── เดือน
- │ │ └───── วันที่
- │ └─────── ชั่วโมง
- └───────── นาที
-```
-
----
 
 ## Quick Start
 
 ```bash
-# 1. สร้างโฟลเดอร์
+# 1. สร้างโฟลเดอร์ runtime
 mkdir -p logs plugins
 
 # 2. Build image
 docker compose build
 
-# 3. Initialize Airflow (ครั้งแรกครั้งเดียว)
+# 3. Initialize Airflow
 docker compose up airflow-init
 
-# 4. Start
+# 4. Start services
 docker compose up -d
 
-# 5. เปิด browser → http://localhost:8080
+# 5. เปิด Airflow UI
+# http://localhost:8080
 # Login: airflow / airflow
-# เปิด DAG weather_pipeline → Trigger → ดูผลที่ task report → Logs
 ```
 
----
+หลังเปิด UI ให้ unpause `weather_ingest` และ `weather_report` ตามต้องการ หรือ trigger ด้วยมือจากหน้า DAGs
 
-## เอกสารอ้างอิง
+## เอกสารเพิ่มเติม
 
+- [FLOW.md](FLOW.md) - diagram และ step-by-step DAG flow
+- [TOOL.md](TOOL.md) - คู่มือรันและคำสั่งที่ใช้บ่อย
 - [Apache Airflow Documentation](https://airflow.apache.org/docs/)
 - [Open-Meteo API Documentation](https://open-meteo.com/en/docs)
-- [Docker Compose for Airflow](https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html)
+- [Supabase REST API Documentation](https://supabase.com/docs/guides/api)
