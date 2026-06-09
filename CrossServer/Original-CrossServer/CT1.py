@@ -6,8 +6,9 @@ Flow:
     create_mock_file -> [should_trigger_ct2] -> trigger_ct2_dag
 
 This DAG uses the classic Airflow DAG + PythonOperator style. It creates a
-mock file on CT1, then optionally calls the Airflow REST API on CT2. CT2
-connection values come from Azure Key Vault.
+mock file on CT1, then optionally calls the Airflow REST API on CT2. The local
+Docker compose stack provides the CT2 API URL and credentials as environment
+variables.
 """
 
 import logging
@@ -19,8 +20,6 @@ import requests
 from airflow import DAG
 from airflow.models.param import Param
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
-from azure.identity import DefaultAzureCredential
-from azure.keyvault.secrets import SecretClient
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,9 @@ def env_int(name, default):
 CT1_OUTPUT_DIR = env("CT1_OUTPUT_DIR", "/tmp/crossserver/out")
 CT2_DAG_ID = env("CT2_DAG_ID", "ct2_pipeline")
 CT2_INPUT_PATH = env("CT2_INPUT_PATH", "/tmp/crossserver/in/mock.txt")
-VAULT_URL = env("VAULT_URL", "https://kv-airflow-demo.vault.azure.net/")
+CT2_AIRFLOW_URL = env("CT2_AIRFLOW_URL", "http://ct2-webserver:8080")
+CT2_AIRFLOW_USER = env("CT2_AIRFLOW_USER", "airflow")
+CT2_AIRFLOW_PASSWORD = env("CT2_AIRFLOW_PASSWORD", "airflow")
 REQUEST_TIMEOUT_SECONDS = env_int("REQUEST_TIMEOUT_SECONDS", 30)
 
 
@@ -85,14 +86,7 @@ def should_trigger_ct2(**context):
 def trigger_ct2_dag(**context):
     file_info = context["ti"].xcom_pull(task_ids="create_mock_file")
 
-    credential = DefaultAzureCredential()
-    client = SecretClient(vault_url=VAULT_URL, credential=credential)
-
-    ct2_url = client.get_secret("CT2-AIRFLOW-URL").value.rstrip("/")
-    ct2_user = client.get_secret("CT2-AIRFLOW-USER").value
-    ct2_password = client.get_secret("CT2-AIRFLOW-PASSWORD").value
-
-    api_url = f"{ct2_url}/api/v1/dags/{CT2_DAG_ID}/dagRuns"
+    api_url = f"{CT2_AIRFLOW_URL.rstrip('/')}/api/v1/dags/{CT2_DAG_ID}/dagRuns"
     payload = {
         "conf": {
             "source_path": file_info["source_path"],
@@ -106,7 +100,7 @@ def trigger_ct2_dag(**context):
     response = requests.post(
         api_url,
         json=payload,
-        auth=(ct2_user, ct2_password),
+        auth=(CT2_AIRFLOW_USER, CT2_AIRFLOW_PASSWORD),
         headers={"Content-Type": "application/json"},
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
@@ -124,11 +118,11 @@ with DAG(
     schedule=None,
     start_date=datetime(2026, 1, 1),
     catchup=False,
-    tags=["cross-server", "ct1", "azure-key-vault"],
+    tags=["cross-server", "ct1", "docker-local"],
     doc_md=__doc__,
     params={
         "context": Param(
-            "Hello from CT1 VM",
+            "Hello from CT1 Docker container",
             type="string",
             description="Text content to write into Mock_[datetime].txt",
         ),

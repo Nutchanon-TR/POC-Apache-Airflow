@@ -1,0 +1,19 @@
+server:
+  port: ${SERVER_PORT:9091}
+
+spring:
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      initialize-schema: always
+  datasource:
+    url: jdbc:h2:mem:batchdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+
+worker:
+  batch:
+    default-input-path: ${REVERSE_INPUT_PATH:/tmp/crossserver/in/mock.txt}
+    default-output-path: ${REVERSE_OUTPUT_PATH:/tmp/crossserver/out/mock_reversed.txt}

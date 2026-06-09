@@ -1,0 +1,183 @@
+x-airflow-build: &airflow-build
+  image: crossserver-airflow:local
+  user: "${AIRFLOW_UID:-50000}:0"
+
+x-airflow-env: &airflow-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__FERNET_KEY: ""
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+
+x-ct1-airflow: &ct1-airflow
+  <<: *airflow-build
+  env_file:
+    - ../.env
+  environment:
+    <<: *airflow-env
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@ct1-postgres/airflow
+    CT1_OUTPUT_DIR: ${CT1_OUTPUT_DIR:-/opt/airflow/shared/ct1-out}
+    CT2_AIRFLOW_URL: ${CT2_AIRFLOW_URL:-http://ct2-webserver:8080}
+    CT2_AIRFLOW_USER: ${CT2_AIRFLOW_USER:-airflow}
+    CT2_AIRFLOW_PASSWORD: ${CT2_AIRFLOW_PASSWORD:-airflow}
+    CT2_DAG_ID: ${CT2_DAG_ID:-ct2_pipeline}
+    CT2_INPUT_PATH: ${CT2_INPUT_PATH:-/opt/airflow/shared/ct2-in/mock.txt}
+    REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-30}
+  volumes:
+    - ./CT1.py:/opt/airflow/dags/CT1.py
+    - ../Weathering/config.py:/opt/airflow/dags/config.py
+    - ../Weathering/dag_ingest.py:/opt/airflow/dags/dag_ingest.py
+    - ../Weathering/dag_report.py:/opt/airflow/dags/dag_report.py
+    - ./data/ct1-out:/opt/airflow/shared/ct1-out
+    - ct1-logs:/opt/airflow/logs
+    - ct1-plugins:/opt/airflow/plugins
+
+x-ct2-airflow: &ct2-airflow
+  <<: *airflow-build
+  environment:
+    <<: *airflow-env
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@ct2-postgres/airflow
+    CT1_DEFAULT_SOURCE_PATH: ${CT1_DEFAULT_SOURCE_PATH:-/opt/airflow/shared/ct1-out/Mock_latest.txt}
+    CT2_INPUT_PATH: ${CT2_INPUT_PATH:-/opt/airflow/shared/ct2-in/mock.txt}
+    CT2_REVERSED_OUTPUT_PATH: ${CT2_REVERSED_OUTPUT_PATH:-/opt/airflow/shared/ct2-out/mock_reversed.txt}
+  volumes:
+    - ./CT2.py:/opt/airflow/dags/CT2.py
+    - ./data/ct1-out:/opt/airflow/shared/ct1-out:ro
+    - ./data/ct2-in:/opt/airflow/shared/ct2-in
+    - ./data/ct2-out:/opt/airflow/shared/ct2-out
+    - ct2-logs:/opt/airflow/logs
+    - ct2-plugins:/opt/airflow/plugins
+
+services:
+  ct1-postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - ct1-postgres-db:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  ct2-postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - ct2-postgres-db:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  ct1-init:
+    <<: *ct1-airflow
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        airflow db migrate
+        airflow users create \
+          --username "${CT1_AIRFLOW_USER:-airflow}" \
+          --password "${CT1_AIRFLOW_PASSWORD:-airflow}" \
+          --firstname "CT1" \
+          --lastname "Admin" \
+          --role "Admin" \
+          --email "ct1@example.local" || true
+    depends_on:
+      ct1-postgres:
+        condition: service_healthy
+
+  ct2-init:
+    <<: *ct2-airflow
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        airflow db migrate
+        airflow users create \
+          --username "${CT2_AIRFLOW_USER:-airflow}" \
+          --password "${CT2_AIRFLOW_PASSWORD:-airflow}" \
+          --firstname "CT2" \
+          --lastname "Admin" \
+          --role "Admin" \
+          --email "ct2@example.local" || true
+    depends_on:
+      ct2-postgres:
+        condition: service_healthy
+
+  ct1-webserver:
+    <<: *ct1-airflow
+    command: webserver
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      ct1-postgres:
+        condition: service_healthy
+      ct1-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  ct1-scheduler:
+    <<: *ct1-airflow
+    command: scheduler
+    depends_on:
+      ct1-postgres:
+        condition: service_healthy
+      ct1-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  ct2-webserver:
+    <<: *ct2-airflow
+    command: webserver
+    ports:
+      - "8082:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      ct2-postgres:
+        condition: service_healthy
+      ct2-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  ct2-scheduler:
+    <<: *ct2-airflow
+    command: scheduler
+    depends_on:
+      ct2-postgres:
+        condition: service_healthy
+      ct2-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  ct1-postgres-db:
+  ct2-postgres-db:
+  ct1-logs:
+  ct2-logs:
+  ct1-plugins:
+  ct2-plugins:
