@@ -5,3 +5,5 @@
 .terraform.lock.hcl
 terraform.tfvars
 crash.log
+apply.log
+*.log
