@@ -1,7 +1,27 @@
 # Plain Postgres for Airflow metadata.
 # The Airflow chart's bundled Bitnami Postgres image was removed from Docker Hub,
 # so we run the official postgres:16 image instead and point Airflow at it
-# (postgresql.enabled=false in values). Ephemeral (emptyDir) — fine for a POC.
+# (postgresql.enabled=false in values).
+#
+# Data lives on a PVC (managed disk) so it survives `az aks stop` / start and
+# the 4h auto-stop — an emptyDir would be wiped on node deallocation.
+resource "kubernetes_persistent_volume_claim" "pg" {
+  metadata {
+    name      = "airflow-pg-data"
+    namespace = kubernetes_namespace.airflow.metadata[0].name
+  }
+  spec {
+    access_modes = ["ReadWriteOnce"]
+    resources {
+      requests = {
+        storage = "2Gi"
+      }
+    }
+  }
+  # Don't block on first-consumer binding (managed-csi binds when the pod mounts).
+  wait_until_bound = false
+}
+
 resource "kubernetes_deployment" "pg" {
   metadata {
     name      = "airflow-pg"
@@ -11,6 +31,9 @@ resource "kubernetes_deployment" "pg" {
 
   spec {
     replicas = 1
+    strategy {
+      type = "Recreate" # single RWO volume — never run two pods at once
+    }
     selector {
       match_labels = { app = "airflow-pg" }
     }
@@ -60,7 +83,9 @@ resource "kubernetes_deployment" "pg" {
 
         volume {
           name = "data"
-          empty_dir {}
+          persistent_volume_claim {
+            claim_name = kubernetes_persistent_volume_claim.pg.metadata[0].name
+          }
         }
       }
     }
