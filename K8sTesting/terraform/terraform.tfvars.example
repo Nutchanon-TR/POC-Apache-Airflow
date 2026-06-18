@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars and tweak if needed. All values have sane defaults.
+
+# subscription_id     = "59c0dcd7-abab-419f-808d-e6b1c11aa6ef"
+# location            = "southeastasia"
+# resource_group_name = "k8s-airflow-poc-rg"
+# node_size           = "Standard_B2ms"   # fallback if quota blocks B-series: "Standard_DS2_v2"
+# auto_stop_hours     = 4
+
+# git-sync source for DAGs (must be reachable from AKS; public repo = no auth)
+# git_repo_url = "https://github.com/Nutchanon-TR/POC-Apache-Airflow.git"
+# git_branch   = "main"
+# git_subpath  = "K8sTesting/dags"
