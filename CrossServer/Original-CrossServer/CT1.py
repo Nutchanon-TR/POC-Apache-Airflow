@@ -3,12 +3,11 @@ CT1 DAG
 =======
 
 Flow:
-    create_mock_file -> [should_trigger_ct2] -> trigger_ct2_dag
+    create_mock_file -> upload_to_blob -> [should_trigger_ct2] -> trigger_ct2_dag
 
-This DAG uses the classic Airflow DAG + PythonOperator style. It creates a
-mock file on CT1, then optionally calls the Airflow REST API on CT2. The local
-Docker compose stack provides the CT2 API URL and credentials as environment
-variables.
+Changes vs baseline:
+- trigger_ct2_dag now calls Worker/API (ct2-worker-api) instead of CT2 Airflow directly
+- upload_to_blob task added after file creation — stores the raw file in Azure Blob (ct1-out/)
 """
 
 import logging
@@ -38,20 +37,20 @@ def env(name, default=""):
 
 
 def env_int(name, default):
-    raw_value = env(name, str(default))
+    raw = env(name, str(default))
     try:
-        return int(raw_value)
+        return int(raw)
     except ValueError as exc:
-        raise RuntimeError(f"Environment variable {name} must be an integer") from exc
+        raise RuntimeError(f"Env var {name} must be an integer") from exc
 
 
-CT1_OUTPUT_DIR = env("CT1_OUTPUT_DIR", "/tmp/crossserver/out")
+CT1_OUTPUT_DIR = env("CT1_OUTPUT_DIR", "/opt/airflow/shared/ct1-out")
 CT2_DAG_ID = env("CT2_DAG_ID", "ct2_pipeline")
-CT2_INPUT_PATH = env("CT2_INPUT_PATH", "/tmp/crossserver/in/mock.txt")
-CT2_AIRFLOW_URL = env("CT2_AIRFLOW_URL", "http://ct2-webserver:8080")
-CT2_AIRFLOW_USER = env("CT2_AIRFLOW_USER", "airflow")
-CT2_AIRFLOW_PASSWORD = env("CT2_AIRFLOW_PASSWORD", "airflow")
+CT2_INPUT_PATH = env("CT2_INPUT_PATH", "/opt/airflow/shared/ct2-in/mock.txt")
+WORKER_API_URL = env("WORKER_API_URL", "http://ct2-worker-api:9092")
 REQUEST_TIMEOUT_SECONDS = env_int("REQUEST_TIMEOUT_SECONDS", 30)
+AZURE_CONN_STR = env("AZURE_STORAGE_CONNECTION_STRING", "")
+AZURE_CONTAINER = env("AZURE_BLOB_CONTAINER", "crossserver-files")
 
 
 def create_mock_file(**context):
@@ -67,7 +66,6 @@ def create_mock_file(**context):
 
     content = f"{mock_context}\ncreated_at={created_at}\n"
     output_path.write_text(content, encoding="utf-8")
-
     logger.info("Created mock file: %s", output_path)
     return {
         "source_path": str(output_path),
@@ -79,42 +77,59 @@ def create_mock_file(**context):
     }
 
 
+def upload_to_blob(**context):
+    file_info = context["ti"].xcom_pull(task_ids="create_mock_file")
+    if not AZURE_CONN_STR:
+        logger.warning("AZURE_STORAGE_CONNECTION_STRING not set — skipping blob upload")
+        return {**file_info, "blob_url": None}
+
+    from azure.storage.blob import BlobServiceClient
+
+    blob_name = f"ct1-out/{file_info['filename']}"
+    client = BlobServiceClient.from_connection_string(AZURE_CONN_STR)
+    container_client = client.get_container_client(AZURE_CONTAINER)
+
+    with open(file_info["source_path"], "rb") as fh:
+        container_client.upload_blob(blob_name, fh, overwrite=True)
+
+    blob_url = (
+        f"https://{client.account_name}.blob.core.windows.net"
+        f"/{AZURE_CONTAINER}/{blob_name}"
+    )
+    logger.info("Uploaded to Azure Blob: %s", blob_url)
+    return {**file_info, "blob_url": blob_url}
+
+
 def should_trigger_ct2(**context):
     return context["params"]["trigger"]
 
 
 def trigger_ct2_dag(**context):
-    file_info = context["ti"].xcom_pull(task_ids="create_mock_file")
+    # Pull from upload_to_blob (which itself contains file_info)
+    file_info = context["ti"].xcom_pull(task_ids="upload_to_blob")
 
-    api_url = f"{CT2_AIRFLOW_URL.rstrip('/')}/api/v1/dags/{CT2_DAG_ID}/dagRuns"
+    api_url = f"{WORKER_API_URL.rstrip('/')}/api/airflow/trigger"
     payload = {
+        "dagId": CT2_DAG_ID,
         "conf": {
             "source_path": file_info["source_path"],
             "target_path": CT2_INPUT_PATH,
             "filename": file_info["filename"],
             "source_created_at": file_info["created_at"],
             "source_bytes": file_info["bytes"],
-        }
+        },
     }
-
-    response = requests.post(
-        api_url,
-        json=payload,
-        auth=(CT2_AIRFLOW_USER, CT2_AIRFLOW_PASSWORD),
-        headers={"Content-Type": "application/json"},
-        timeout=REQUEST_TIMEOUT_SECONDS,
-    )
+    response = requests.post(api_url, json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
-
-    dag_run_id = response.json().get("dag_run_id", "")
-    logger.info("Triggered CT2 DAG run: %s", dag_run_id)
+    dag_run_id = response.json().get("dagRunId", "")
+    logger.info("CT2 triggered via Worker/API — dagRunId: %s", dag_run_id)
     return dag_run_id
 
 
 with DAG(
     dag_id="ct1_pipeline",
     default_args=DAG_DEFAULT_ARGS,
-    description="CT1 creates a mock file and optionally triggers CT2",
+    description="CT1 creates a mock file, uploads to Azure Blob, then triggers CT2 via Worker/API",
     schedule=None,
     start_date=datetime(2026, 1, 1),
     catchup=False,
@@ -129,13 +144,18 @@ with DAG(
         "trigger": Param(
             True,
             type="boolean",
-            description="True = trigger ct2_pipeline after creating the file",
+            description="True = trigger ct2_pipeline via Worker/API after creating the file",
         ),
     },
 ) as dag:
     create_mock_file_task = PythonOperator(
         task_id="create_mock_file",
         python_callable=create_mock_file,
+    )
+
+    upload_to_blob_task = PythonOperator(
+        task_id="upload_to_blob",
+        python_callable=upload_to_blob,
     )
 
     should_trigger_ct2_task = ShortCircuitOperator(
@@ -148,4 +168,4 @@ with DAG(
         python_callable=trigger_ct2_dag,
     )
 
-    create_mock_file_task >> should_trigger_ct2_task >> trigger_ct2_dag_task
+    create_mock_file_task >> upload_to_blob_task >> should_trigger_ct2_task >> trigger_ct2_dag_task

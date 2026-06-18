@@ -3,11 +3,11 @@ CT2 DAG
 =======
 
 Flow:
-    copy_mock_file -> reverse_text
+    copy_mock_file -> call_batch_reverse
 
-This DAG is triggered by CT1. It receives the CT1 file path through dag_run.conf,
-copies the file from the shared Docker volume, then writes a reversed-text
-output file.
+Changes vs baseline:
+- reverse_text task replaced by call_batch_reverse — delegates to Worker/Batch via HTTP
+- Worker/Batch performs the text reversal and uploads the reversed file to Azure Blob
 """
 
 import logging
@@ -16,6 +16,7 @@ import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import requests
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
@@ -37,13 +38,15 @@ def env(name, default=""):
 
 CT1_DEFAULT_SOURCE_PATH = env(
     "CT1_DEFAULT_SOURCE_PATH",
-    "/tmp/crossserver/out/Mock_latest.txt",
+    "/opt/airflow/shared/ct1-out/Mock_latest.txt",
 )
-CT2_INPUT_PATH = env("CT2_INPUT_PATH", "/tmp/crossserver/in/mock.txt")
+CT2_INPUT_PATH = env("CT2_INPUT_PATH", "/opt/airflow/shared/ct2-in/mock.txt")
 CT2_REVERSED_OUTPUT_PATH = env(
     "CT2_REVERSED_OUTPUT_PATH",
-    "/tmp/crossserver/out/mock_reversed.txt",
+    "/opt/airflow/shared/ct2-out/mock_reversed.txt",
 )
+WORKER_BATCH_URL = env("WORKER_BATCH_URL", "http://worker-batch:9091")
+REQUEST_TIMEOUT_SECONDS = int(env("REQUEST_TIMEOUT_SECONDS", "30"))
 
 
 def dag_conf(context):
@@ -59,10 +62,12 @@ def copy_mock_file(**context):
 
     source = Path(source_path)
     if not source.exists():
-        raise FileNotFoundError(f"CT1 mock file is not available in shared volume: {source}")
+        raise FileNotFoundError(
+            f"CT1 mock file is not available in shared volume: {source}"
+        )
 
     shutil.copy2(source, target_path)
-    logger.info("Copied %s from shared CT1 volume -> %s", source, target_path)
+    logger.info("Copied %s → %s", source, target_path)
     return {
         "source_path": str(source),
         "input_path": str(target_path),
@@ -70,27 +75,34 @@ def copy_mock_file(**context):
     }
 
 
-def reverse_text(**context):
+def call_batch_reverse(**context):
     file_info = context["ti"].xcom_pull(task_ids="copy_mock_file")
-    input_path = Path(file_info["input_path"])
-    output_path = Path(CT2_REVERSED_OUTPUT_PATH)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    content = input_path.read_text(encoding="utf-8")
-    output_path.write_text(content[::-1], encoding="utf-8")
-
-    logger.info("Wrote reversed text to: %s", output_path)
+    api_url = f"{WORKER_BATCH_URL.rstrip('/')}/batch/reverse"
+    payload = {
+        "inputPath": file_info["input_path"],
+        "outputPath": CT2_REVERSED_OUTPUT_PATH,
+    }
+    response = requests.post(api_url, json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    result = response.json()
+    logger.info(
+        "Worker/Batch reversed file: %s → %s (blobUrl=%s)",
+        file_info["input_path"],
+        CT2_REVERSED_OUTPUT_PATH,
+        result.get("blobUrl"),
+    )
     return {
-        "input_path": str(input_path),
-        "output_path": str(output_path),
-        "bytes": str(output_path.stat().st_size),
+        "input_path": file_info["input_path"],
+        "output_path": CT2_REVERSED_OUTPUT_PATH,
+        "bytes": str(result.get("bytes", 0)),
+        "blob_url": result.get("blobUrl"),
     }
 
 
 with DAG(
     dag_id="ct2_pipeline",
     default_args=DAG_DEFAULT_ARGS,
-    description="CT2 copies a CT1 file from a Docker shared volume and reverses text",
+    description="CT2 copies a CT1 file from shared volume and delegates reversal to Worker/Batch",
     schedule=None,
     start_date=datetime(2026, 1, 1),
     catchup=False,
@@ -102,9 +114,9 @@ with DAG(
         python_callable=copy_mock_file,
     )
 
-    reverse_text_task = PythonOperator(
-        task_id="reverse_text",
-        python_callable=reverse_text,
+    call_batch_reverse_task = PythonOperator(
+        task_id="call_batch_reverse",
+        python_callable=call_batch_reverse,
     )
 
-    copy_mock_file_task >> reverse_text_task
+    copy_mock_file_task >> call_batch_reverse_task

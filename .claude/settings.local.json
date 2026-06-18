@@ -27,7 +27,10 @@
       "Bash(python3 -m json.tool)",
       "Bash(curl -s -u airflow:airflow http://localhost:8080/api/v1/dags)",
       "Bash(curl -s ifconfig.me)",
-      "Bash(curl -s ipinfo.io/ip)"
+      "Bash(curl -s ipinfo.io/ip)",
+      "Bash(Get-ChildItem -Recurse \"D:\\\\A_SIT03\\\\SIT3-TERM2\\\\POC-Airflow\\\\CrossServer\\\\Original-CrossServer\")",
+      "Bash(Select-Object FullName, Length)",
+      "PowerShell(az --version 2>&1)"
     ]
   }
 }

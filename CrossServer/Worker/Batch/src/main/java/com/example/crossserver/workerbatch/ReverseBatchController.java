@@ -24,11 +24,17 @@ public class ReverseBatchController {
     private final JobLauncher jobLauncher;
     private final Job reverseTextJob;
     private final ReverseBatchProperties properties;
+    private final AzureBlobService azureBlobService;
 
-    public ReverseBatchController(JobLauncher jobLauncher, Job reverseTextJob, ReverseBatchProperties properties) {
+    public ReverseBatchController(
+            JobLauncher jobLauncher,
+            Job reverseTextJob,
+            ReverseBatchProperties properties,
+            AzureBlobService azureBlobService) {
         this.jobLauncher = jobLauncher;
         this.reverseTextJob = reverseTextJob;
         this.properties = properties;
+        this.azureBlobService = azureBlobService;
     }
 
     @GetMapping("/batch/health")
@@ -56,17 +62,23 @@ public class ReverseBatchController {
         if (execution.getStatus() != BatchStatus.COMPLETED) {
             throw new ResponseStatusException(
                     HttpStatus.INTERNAL_SERVER_ERROR,
-                    "Reverse batch failed with status " + execution.getStatus()
-            );
+                    "Reverse batch failed with status " + execution.getStatus());
         }
 
         long bytes = Files.size(Path.of(outputPath));
-        return new ReverseResponse(execution.getJobId(), execution.getStatus().toString(), inputPath, outputPath, bytes);
+        String blobName = "ct2-out/" + Path.of(outputPath).getFileName();
+        String blobUrl = azureBlobService.uploadIfConfigured(Path.of(outputPath), blobName);
+
+        return new ReverseResponse(execution.getJobId(), execution.getStatus().toString(),
+                inputPath, outputPath, bytes, blobUrl);
     }
 
     public record ReverseRequest(String inputPath, String outputPath) {
     }
 
-    public record ReverseResponse(Long jobId, String status, String inputPath, String outputPath, long bytes) {
+    public record ReverseResponse(
+            Long jobId, String status,
+            String inputPath, String outputPath,
+            long bytes, String blobUrl) {
     }
 }

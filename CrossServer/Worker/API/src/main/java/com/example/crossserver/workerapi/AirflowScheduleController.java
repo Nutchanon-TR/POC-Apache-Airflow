@@ -36,10 +36,39 @@ public class AirflowScheduleController {
                 .build();
     }
 
+    // ── health ───────────────────────────────────────────────────────────────
+
     @GetMapping("/health")
     public Map<String, String> health() {
         return Map.of("status", "UP");
     }
+
+    // ── trigger DAG immediately ───────────────────────────────────────────────
+
+    @PostMapping("/trigger")
+    public TriggerResponse triggerDag(@RequestBody(required = false) TriggerRequest request) {
+        String dagId = (request != null && request.dagId() != null)
+                ? request.dagId()
+                : properties.getDefaultDagId();
+
+        Map<String, Object> conf = (request != null) ? request.conf() : null;
+
+        String url = dagRunsUrl(dagId);
+        Map<String, Object> body = new LinkedHashMap<>();
+        if (conf != null && !conf.isEmpty()) {
+            body.put("conf", conf);
+        }
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+
+        ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.POST, entity, Map.class);
+        String dagRunId = response.getBody() == null ? null : (String) response.getBody().get("dag_run_id");
+        return new TriggerResponse(dagRunId, dagId);
+    }
+
+    // ── schedule-mode (existing) ──────────────────────────────────────────────
 
     @GetMapping("/schedule-mode")
     public ScheduleModeResponse getScheduleMode() {
@@ -52,6 +81,8 @@ public class AirflowScheduleController {
         upsertAirflowVariable(fastMode);
         return scheduleModeResponse(fastMode);
     }
+
+    // ── internals ────────────────────────────────────────────────────────────
 
     private boolean readFastMode() {
         try {
@@ -77,7 +108,7 @@ public class AirflowScheduleController {
             restTemplate.getForEntity(variableUrl(), Map.class);
             restTemplate.delete(variableUrl());
         } catch (HttpClientErrorException.NotFound ignored) {
-            // Missing variable means this is the first schedule-mode update.
+            // first call — variable does not exist yet
         }
 
         restTemplate.exchange(variablesUrl(), HttpMethod.POST, entity, String.class);
@@ -87,17 +118,32 @@ public class AirflowScheduleController {
         return new ScheduleModeResponse(
                 fastMode,
                 fastMode ? "PT1M" : "PT1H",
-                properties.getScheduleModeVariableKey()
-        );
+                properties.getScheduleModeVariableKey());
+    }
+
+    private String baseUrl() {
+        return properties.getBaseUrl().replaceAll("/+$", "");
+    }
+
+    private String dagRunsUrl(String dagId) {
+        return baseUrl() + "/api/v1/dags/" + dagId + "/dagRuns";
     }
 
     private String variablesUrl() {
-        return properties.getBaseUrl().replaceAll("/+$", "") + "/api/v1/variables";
+        return baseUrl() + "/api/v1/variables";
     }
 
     private String variableUrl() {
         String encodedKey = URLEncoder.encode(properties.getScheduleModeVariableKey(), StandardCharsets.UTF_8);
         return variablesUrl() + "/" + encodedKey;
+    }
+
+    // ── records ───────────────────────────────────────────────────────────────
+
+    public record TriggerRequest(String dagId, Map<String, Object> conf) {
+    }
+
+    public record TriggerResponse(String dagRunId, String dagId) {
     }
 
     public record ScheduleModeRequest(Boolean fastMode) {

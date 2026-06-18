@@ -2,7 +2,7 @@ x-airflow-build: &airflow-build
   build:
     context: .
     dockerfile: Dockerfile
-  image: crossserver-airflow:local
+  image: annotation-airflow:local
   user: "${AIRFLOW_UID:-50000}:0"
 
 x-airflow-env: &airflow-env
@@ -16,42 +16,49 @@ x-airflow-env: &airflow-env
 x-ct1-airflow: &ct1-airflow
   <<: *airflow-build
   env_file:
-    - .env
+    - ../.env
   environment:
     <<: *airflow-env
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@ct1-postgres/airflow
-    CT1_OUTPUT_DIR: ${CT1_OUTPUT_DIR:-/opt/airflow/shared/ct1-out}
-    CT2_DAG_ID: ${CT2_DAG_ID:-ct2_pipeline}
-    CT2_INPUT_PATH: ${CT2_INPUT_PATH:-/opt/airflow/shared/ct2-in/mock.txt}
-    WORKER_API_URL: ${WORKER_API_URL:-http://ct2-worker-api:9092}
-    REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-30}
+    AIRFLOW__WEBSERVER__SESSION_COOKIE_NAME: ct1_session
+    AIRFLOW__WEBSERVER__SECRET_KEY: ct1-secret-key-crossserver
+    CT1_OUTPUT_DIR: /opt/airflow/shared/ct1-out
+    CT2_DAG_ID: ct2_pipeline
+    CT2_INPUT_PATH: /opt/airflow/shared/ct2-in/mock.txt
+    WORKER_API_URL: http://ct2-worker-api:9092
+    REQUEST_TIMEOUT_SECONDS: "30"
     AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
     AZURE_BLOB_CONTAINER: ${AZURE_BLOB_CONTAINER:-crossserver-files}
   volumes:
-    - ./Original-CrossServer/CT1.py:/opt/airflow/dags/CT1.py
+    - ./Annotation-CrossServer/CT1.py:/opt/airflow/dags/CT1.py
+    - ./config/ct1_webserver_config.py:/opt/airflow/webserver_config.py
     - ./data/ct1-out:/opt/airflow/shared/ct1-out
-    - ct1-logs:/opt/airflow/logs
-    - ct1-plugins:/opt/airflow/plugins
+    - ct1ann-logs:/opt/airflow/logs
+    - ct1ann-plugins:/opt/airflow/plugins
 
 x-ct2-airflow: &ct2-airflow
   <<: *airflow-build
   environment:
     <<: *airflow-env
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@ct2-postgres/airflow
-    CT1_DEFAULT_SOURCE_PATH: ${CT1_DEFAULT_SOURCE_PATH:-/opt/airflow/shared/ct1-out/Mock_latest.txt}
-    CT2_INPUT_PATH: ${CT2_INPUT_PATH:-/opt/airflow/shared/ct2-in/mock.txt}
-    CT2_REVERSED_OUTPUT_PATH: ${CT2_REVERSED_OUTPUT_PATH:-/opt/airflow/shared/ct2-out/mock_reversed.txt}
-    WORKER_BATCH_URL: ${WORKER_BATCH_URL:-http://worker-batch:9091}
-    REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-30}
+    AIRFLOW__WEBSERVER__SESSION_COOKIE_NAME: ct2_session
+    AIRFLOW__WEBSERVER__SECRET_KEY: ct2-secret-key-crossserver
+    CT1_DEFAULT_SOURCE_PATH: /opt/airflow/shared/ct1-out/Mock_latest.txt
+    CT2_INPUT_PATH: /opt/airflow/shared/ct2-in/mock.txt
+    CT2_REVERSED_OUTPUT_PATH: /opt/airflow/shared/ct2-out/mock_reversed.txt
+    WORKER_BATCH_URL: http://worker-batch:9091
+    REQUEST_TIMEOUT_SECONDS: "30"
   volumes:
-    - ./Original-CrossServer/CT2.py:/opt/airflow/dags/CT2.py
+    - ./Annotation-CrossServer/CT2.py:/opt/airflow/dags/CT2.py
+    - ./config/ct2_webserver_config.py:/opt/airflow/webserver_config.py
     - ./data/ct1-out:/opt/airflow/shared/ct1-out:ro
     - ./data/ct2-in:/opt/airflow/shared/ct2-in
     - ./data/ct2-out:/opt/airflow/shared/ct2-out
-    - ct2-logs:/opt/airflow/logs
-    - ct2-plugins:/opt/airflow/plugins
+    - ct2ann-logs:/opt/airflow/logs
+    - ct2ann-plugins:/opt/airflow/plugins
 
 services:
+  # ── Postgres ────────────────────────────────────────────────────────────────
   ct1-postgres:
     image: postgres:16
     environment:
@@ -64,7 +71,7 @@ services:
       timeout: 5s
       retries: 10
     volumes:
-      - ct1-postgres-db:/var/lib/postgresql/data
+      - ct1ann-postgres-db:/var/lib/postgresql/data
     restart: unless-stopped
 
   ct2-postgres:
@@ -79,9 +86,10 @@ services:
       timeout: 5s
       retries: 10
     volumes:
-      - ct2-postgres-db:/var/lib/postgresql/data
+      - ct2ann-postgres-db:/var/lib/postgresql/data
     restart: unless-stopped
 
+  # ── Airflow init ─────────────────────────────────────────────────────────────
   ct1-init:
     <<: *ct1-airflow
     command:
@@ -93,10 +101,8 @@ services:
         airflow users create \
           --username "${CT1_AIRFLOW_USER:-airflow}" \
           --password "${CT1_AIRFLOW_PASSWORD:-airflow}" \
-          --firstname "CT1" \
-          --lastname "Admin" \
-          --role "Admin" \
-          --email "ct1@example.local" || true
+          --firstname "CT1" --lastname "Admin" \
+          --role "Admin" --email "ct1@example.local" || true
     depends_on:
       ct1-postgres:
         condition: service_healthy
@@ -112,14 +118,13 @@ services:
         airflow users create \
           --username "${CT2_AIRFLOW_USER:-airflow}" \
           --password "${CT2_AIRFLOW_PASSWORD:-airflow}" \
-          --firstname "CT2" \
-          --lastname "Admin" \
-          --role "Admin" \
-          --email "ct2@example.local" || true
+          --firstname "CT2" --lastname "Admin" \
+          --role "Admin" --email "ct2@example.local" || true
     depends_on:
       ct2-postgres:
         condition: service_healthy
 
+  # ── CT1 Airflow ──────────────────────────────────────────────────────────────
   ct1-webserver:
     <<: *ct1-airflow
     command: webserver
@@ -148,6 +153,7 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  # ── CT2 Airflow ──────────────────────────────────────────────────────────────
   ct2-webserver:
     <<: *ct2-airflow
     command: webserver
@@ -176,11 +182,11 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # ── Worker/API – CT1 side ─────────────────────────────────────────────────
+  # ── Worker/API – CT1 side (external clients trigger CT1 through this) ─────────
   ct1-worker-api:
     build:
       context: ./Worker/API
-    image: crossserver-worker-api:local
+    image: annotation-worker-api:local
     ports:
       - "9090:9090"
     environment:
@@ -194,9 +200,9 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # ── Worker/API – CT2 side ─────────────────────────────────────────────────
+  # ── Worker/API – CT2 side (CT1 DAG triggers CT2 through this) ────────────────
   ct2-worker-api:
-    image: crossserver-worker-api:local
+    image: annotation-worker-api:local
     ports:
       - "9092:9092"
     environment:
@@ -212,11 +218,11 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # ── Worker/Batch ──────────────────────────────────────────────────────────
+  # ── Worker/Batch (CT2 DAG delegates text reversal here) ──────────────────────
   worker-batch:
     build:
       context: ./Worker/Batch
-    image: crossserver-worker-batch:local
+    image: annotation-worker-batch:local
     ports:
       - "9091:9091"
     environment:
@@ -231,9 +237,9 @@ services:
     restart: unless-stopped
 
 volumes:
-  ct1-postgres-db:
-  ct2-postgres-db:
-  ct1-logs:
-  ct2-logs:
-  ct1-plugins:
-  ct2-plugins:
+  ct1ann-postgres-db:
+  ct2ann-postgres-db:
+  ct1ann-logs:
+  ct2ann-logs:
+  ct1ann-plugins:
+  ct2ann-plugins:

@@ -9,6 +9,7 @@ public class AirflowProperties {
     private String scheduleModeVariableKey = "batch_fast_mode";
     private String username = "admin";
     private String password = "admin";
+    private String defaultDagId = "ct1_pipeline";
 
     public String getBaseUrl() {
         return baseUrl;
@@ -40,5 +41,13 @@ public class AirflowProperties {
 
     public void setPassword(String password) {
         this.password = password;
+    }
+
+    public String getDefaultDagId() {
+        return defaultDagId;
+    }
+
+    public void setDefaultDagId(String defaultDagId) {
+        this.defaultDagId = defaultDagId;
     }
 }

@@ -15,10 +15,11 @@
     <artifactId>worker-batch</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>worker-batch</name>
-    <description>Spring Batch worker for reversing text files requested by Airflow</description>
+    <description>Spring Batch worker for reversing text files; uploads results to Azure Blob Storage</description>
 
     <properties>
         <java.version>17</java.version>
+        <azure.storage.version>12.28.1</azure.storage.version>
     </properties>
 
     <dependencies>
@@ -34,6 +35,11 @@
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
             <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.azure</groupId>
+            <artifactId>azure-storage-blob</artifactId>
+            <version>${azure.storage.version}</version>
         </dependency>
     </dependencies>
 
