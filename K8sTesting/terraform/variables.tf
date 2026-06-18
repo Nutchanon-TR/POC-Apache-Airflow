@@ -6,8 +6,8 @@ variable "subscription_id" {
 
 variable "location" {
   type        = string
-  description = "Azure region."
-  default     = "southeastasia"
+  description = "Azure region. Student-subscription policy only allows: malaysiawest, japanwest, centralindia, eastasia, japaneast."
+  default     = "japaneast"
 }
 
 variable "resource_group_name" {
@@ -30,8 +30,14 @@ variable "aks_name" {
 
 variable "node_size" {
   type        = string
-  description = "VM size for the single AKS node. B2ms = 2 vCPU / 8GB, fits the student vCPU quota."
-  default     = "Standard_B2ms"
+  description = "VM size for the single AKS node. B2s_v2 = 2 vCPU / 8GB (allowed for student subs in japaneast)."
+  default     = "Standard_B2s_v2"
+}
+
+variable "automation_location" {
+  type        = string
+  description = "Region for the Automation Account. Student subs can't host it in japaneast; japanwest is the only region allowed by BOTH the automation service and the deployment-region policy."
+  default     = "japanwest"
 }
 
 variable "node_count" {

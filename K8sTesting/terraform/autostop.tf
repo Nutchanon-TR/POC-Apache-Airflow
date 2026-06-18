@@ -5,7 +5,7 @@
 
 resource "azurerm_automation_account" "auto" {
   name                = "${var.prefix}-autostop"
-  location            = azurerm_resource_group.rg.location
+  location            = var.automation_location
   resource_group_name = azurerm_resource_group.rg.name
   sku_name            = "Basic"
 
@@ -23,7 +23,7 @@ resource "azurerm_role_assignment" "auto_contributor" {
 
 resource "azurerm_automation_runbook" "stop_aks" {
   name                    = "stop-aks"
-  location                = azurerm_resource_group.rg.location
+  location                = var.automation_location
   resource_group_name     = azurerm_resource_group.rg.name
   automation_account_name = azurerm_automation_account.auto.name
   log_verbose             = false

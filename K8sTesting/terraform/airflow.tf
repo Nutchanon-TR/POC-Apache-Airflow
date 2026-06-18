@@ -89,16 +89,19 @@ resource "helm_release" "airflow" {
 
   values = [
     templatefile("${path.module}/airflow-values.yaml.tpl", {
-      git_repo      = var.git_repo_url
-      git_branch    = var.git_branch
-      git_subpath   = var.git_subpath
-      kpo_sa        = kubernetes_service_account.kpo.metadata[0].name
-      secret_name   = kubernetes_secret.azure_storage.metadata[0].name
+      git_repo    = var.git_repo_url
+      git_branch  = var.git_branch
+      git_subpath = var.git_subpath
+      kpo_sa      = kubernetes_service_account.kpo.metadata[0].name
+      secret_name = kubernetes_secret.azure_storage.metadata[0].name
+      pg_host     = kubernetes_service.pg.metadata[0].name
     })
   ]
 
   depends_on = [
     kubernetes_role_binding.kpo,
     kubernetes_secret.azure_storage,
+    kubernetes_deployment.pg,
+    kubernetes_service.pg,
   ]
 }

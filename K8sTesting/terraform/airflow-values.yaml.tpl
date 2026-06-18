@@ -1,9 +1,27 @@
 # Lightweight Airflow: LocalExecutor + git-sync. Heavy/optional components off.
 executor: LocalExecutor
 
-# Bundled Postgres (LocalExecutor needs a real DB to run tasks in parallel).
+# Run DB-migrate and create-user as NORMAL jobs (not Helm hooks). The Terraform
+# helm provider doesn't reliably trigger hooks, which left the DB un-migrated.
+migrateDatabaseJob:
+  useHelmHooks: false
+createUserJob:
+  useHelmHooks: false
+
+# Use our own postgres:16 (pg.tf) instead of the chart's Bitnami image
+# (which was removed from Docker Hub). LocalExecutor needs a real DB.
 postgresql:
-  enabled: true
+  enabled: false
+
+data:
+  metadataConnection:
+    user: airflow
+    pass: airflow
+    protocol: postgresql
+    host: ${pg_host}
+    port: 5432
+    db: airflow
+    sslmode: disable
 
 # Not needed for LocalExecutor / this POC -> disabled to save the single node.
 redis:
@@ -27,10 +45,14 @@ scheduler:
     create: false
     name: ${kpo_sa}
 
-# Applied to every Airflow container.
+# Literal env applied to every Airflow container.
 env:
   - name: _PIP_ADDITIONAL_REQUIREMENTS
     value: "apache-airflow-providers-microsoft-azure"
+
+# extraEnv is rendered verbatim, so it supports valueFrom (the chart's `env`
+# schema rejects valueFrom). Pull the wasb connection from the k8s Secret.
+extraEnv: |
   - name: AIRFLOW_CONN_WASB_DEFAULT
     valueFrom:
       secretKeyRef:
