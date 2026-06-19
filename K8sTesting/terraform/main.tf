@@ -5,12 +5,12 @@ resource "azurerm_resource_group" "rg" {
   location = var.location
 
   tags = {
-    project    = "k8s-airflow-poc"
+    project    = "airflow-aci-poc"
     managed_by = "terraform"
   }
 }
 
-# Random suffix to keep the storage account name globally unique.
+# Random suffix to keep storage account name + DNS label globally unique.
 resource "random_string" "suffix" {
   length  = 6
   upper   = false
